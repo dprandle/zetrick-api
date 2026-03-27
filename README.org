@@ -1,0 +1,39 @@
+* Zetrick API                                                                                                                                       
+Express server running on the Zetrick dev droplet. Currently handles Twilio SMS webhooks for timesheet management (clock in/clock out). May expand to host additional internal APIs over time.
+
+** Deployment   
+Hosted at =api.noblesteed.dev:444= on the Zetrick Digital Ocean droplet. Managed by systemd.
+
+*** Dependencies                                                                                                                                    
+- Node.js
+- nginx (SSL termination + reverse proxy)
+- Let's Encrypt cert for =api.noblesteed.dev=
+
+*** Start / Stop / Restart
+
+#+begin_src sh
+  systemctl start zetrick-api
+  systemctl stop zetrick-api                                                                                                                         
+  systemctl restart zetrick-api
+#+end_src
+
+*** After changing the service file                                                                                                                 
+
+#+begin_src sh
+  systemctl daemon-reload && systemctl restart zetrick-api
+#+end_src
+
+*** Logs
+
+#+begin_src sh
+  journalctl -u zetrick-api -f
+#+end_src
+
+** Endpoints
+
+*** POST /sms
+Twilio webhook for inbound SMS messages. Used for timesheet clock in/clock out.
+
+Configure in Twilio console under Phone Numbers → Active Numbers → Messaging → A message comes in.
+
+Webhook URL: =https://api.noblesteed.dev:444/sms=

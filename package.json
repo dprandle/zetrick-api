@@ -2,8 +2,11 @@
   "name": "zetrick-api",
   "version": "1.0.0",
   "description": "",
+  "type": "module",
   "scripts": {
-    "start": "node src/server.js"
+    "start": "tsx src/server.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",
@@ -14,6 +17,10 @@
     "mongodb": "^7.1.1"
   },
   "devDependencies": {
-    "prettier": "^3.8.1"
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.6.0",
+    "prettier": "^3.8.1",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
   }
 }

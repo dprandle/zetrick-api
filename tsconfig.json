@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": ["src", "../../.emacs.d/backup/!home!dprandle!projects!zetrick-api!src!bootstrap.ts~", "../../.emacs.d/backup/!home!dprandle!projects!zetrick-api!src!config.ts~", "../../.emacs.d/backup/!home!dprandle!projects!zetrick-api!src!db.ts~"]
+}

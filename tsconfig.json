@@ -8,5 +8,5 @@
     "strict": true,
     "skipLibCheck": true
   },
-  "include": ["src", "../../.emacs.d/backup/!home!dprandle!projects!zetrick-api!src!bootstrap.ts~", "../../.emacs.d/backup/!home!dprandle!projects!zetrick-api!src!config.ts~", "../../.emacs.d/backup/!home!dprandle!projects!zetrick-api!src!db.ts~"]
+  "include": ["src", "../../.emacs.d/backup/!home!dprandle!projects!zetrick-api!src!bootstrap.ts~", "../../.emacs.d/backup/!home!dprandle!projects!zetrick-api!src!config.ts~", "../../.emacs.d/backup/!home!dprandle!projects!zetrick-api!src!db.ts~", "../../.emacs.d/backup/!home!dprandle!projects!zetrick-api!src!schemas.ts~"]
 }

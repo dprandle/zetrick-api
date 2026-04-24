@@ -12,12 +12,12 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@fastify/formbody": "^8.0.2",
     "dotenv": "^17.3.1",
-    "express": "^5.2.1",
+    "fastify": "^5.8.5",
     "mongodb": "^7.1.1"
   },
   "devDependencies": {
-    "@types/express": "^5.0.6",
     "@types/node": "^25.6.0",
     "prettier": "^3.8.1",
     "tsx": "^4.21.0",

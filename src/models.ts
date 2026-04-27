@@ -42,7 +42,10 @@ export interface crole_link {
     emp_id: uid;
 }
 
+type byte = number;
+
 export interface contract_route extends uobj_common {
     route_num: string;
     assignments: Record<string, crole_link[]>;
+    timezone: byte[];
 }

@@ -5,7 +5,11 @@ function require_env_string(name: string): string {
 }
 
 export const config = {
-    mongo_uri: require_env_string("MONGO_URI"),
-    mongo_db_name: require_env_string("MONGO_DB"),
-    mongo_time_records: require_env_string("MONGO_TIME_RECORDS"),
+    mongo: {
+        uri: require_env_string("MONGO_URI"),
+        db_name: require_env_string("MONGO_DB"),
+        time_records: require_env_string("MONGO_TIME_RECORDS"),
+        hresources: require_env_string("MONGO_HRESOURCES"),
+        contracts: require_env_string("MONGO_CONTRACTS")
+    }
 };

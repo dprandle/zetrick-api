@@ -1,13 +1,15 @@
 import { MongoClient } from "mongodb";
 import { config } from "./config.js";
-let timeRecords;
-export async function connectDB() {
-    const client = new MongoClient(config.mongo_uri);
+let client;
+export async function connect_to_db() {
+    client = new MongoClient(config.mongo_uri);
     await client.connect();
-    const db = client.db(config.mongo_db_name);
-    timeRecords = db.collection(config.mongo_time_records);
-    console.log("Connected to MongoDB");
+    ilog("Connected to MongoDB");
 }
-export function getTimeRecords() {
-    return timeRecords;
+export function get_db() {
+    return client.db(config.mongo_db_name);
+}
+export function get_time_records() {
+    const db = get_db();
+    return db.collection(config.mongo_time_records);
 }

@@ -1,21 +1,21 @@
 import "./bootstrap.js";
-import express from "express";
-import { connectDB, getTimeRecords } from "./db.js";
-const app = express();
-app.use(express.urlencoded({ extended: false }));
-app.use(express.json());
-app.post("/sms", async (req, res) => {
-    const from = req.body.From;
-    const body = req.body.Body;
-    console.log(`SMS from ${from}: ${body}`);
-    const timeRecords = getTimeRecords();
-    res.set("Content-Type", "text/xml");
-    res.send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Message>Got your message!</Message>
-</Response>
-`);
-});
-connectDB().then(() => {
-    app.listen(3000, () => console.log("Running on port 3000"));
-});
+import Fastify from "fastify";
+import formbody from "@fastify/formbody";
+import { connect_to_db } from "./db.js";
+import { create_sms_routes } from "./sms.js";
+const port = 3000;
+async function start_server() {
+    const app = Fastify();
+    await connect_to_db();
+    app.register(formbody);
+    app.register(create_sms_routes);
+    try {
+        await app.listen({ port: port });
+        ilog(`Server listening at:`);
+        ilog(`- Local:   http://localhost:${port}`);
+    }
+    catch (err) {
+        elog("Server failed to start:", err);
+    }
+}
+start_server();

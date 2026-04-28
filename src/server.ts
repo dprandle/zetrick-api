@@ -11,7 +11,7 @@ async function start_server() {
 
     await connect_to_db();
     app.register(formbody);
-    app.register(create_sms_routes);
+    app.register(create_sms_routes());
 
     try {
         await app.listen({ port: port });

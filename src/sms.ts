@@ -27,8 +27,13 @@ function normalize_phone(phone: string): string {
     return digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
 }
 
-function fmt_time(date: Date): string {
-    return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+function tz_str(tz_bytes: number[]): string {
+    return Buffer.from(tz_bytes).toString("utf8");
+}
+
+function fmt_time(date: Date, tz_bytes: number[] | null): string {
+    const tz = tz_bytes ? tz_str(tz_bytes) : "UTC";
+    return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz });
 }
 
 function fmt_duration(start: Date, end: Date): string {
@@ -43,7 +48,7 @@ function fmt_duration(start: Date, end: Date): string {
 }
 
 function day_start(start: Date, tz_bytes: number[]): Date {
-    const tz_id = Buffer.from(tz_bytes).toString("utf8");
+    const tz_id = tz_str(tz_bytes);
     const fmt = new Intl.DateTimeFormat("en-US", {
         timeZone: tz_id,
         year: "numeric",
@@ -107,7 +112,9 @@ async function handle_clock_in(hres: hresource, contract_code: string | null): P
     if (active) {
         const contract = await contract_coll.findOne({ _id: active.cont_id });
         const code = contract?.route_num ?? active.cont_id;
-        return `You're already clocked in to ${code} (since ${fmt_time(active.start)}). To clock out reply:\nOUT`;
+        const tz = contract?.timezone ?? null;
+        const time = fmt_time(active.start, tz);
+        return `You're already clocked in to ${code} (since ${time}). To clock out reply:\nOUT`;
     }
 
     const user_contracts = await find_user_contracts(hres, contract_coll);
@@ -151,7 +158,7 @@ async function handle_clock_in(hres: hresource, contract_code: string | null): P
             `Created timesheet ${new_time_record._id} for ${new_time_record.hrid} (start: ${format_date_for_log(new_time_record.start)})`
         );
         const auto_note = user_contracts.length === 1 && !contract_code ? " (your only contract)" : "";
-        return `Clocked in to ${contract.route_num}${auto_note} at ${fmt_time(now)}. Reply OUT when done.`;
+        return `Clocked in to ${contract.route_num}${auto_note} at ${fmt_time(now, contract.timezone)}. Reply OUT when done.`;
     }
     return `Clock in failed - server error`;
 }
@@ -174,7 +181,7 @@ async function handle_clock_out(hres: hresource): Promise<string> {
         const contract = await contract_coll.findOne({ _id: active.cont_id });
         const code = contract?.route_num ?? active.cont_id;
         ilog(`Updated timesheet ${active._id} for ${hres._id} (end: ${format_date_for_log(now)})`);
-        return `Clocked out of ${code} at ${fmt_time(now)}. Total: ${fmt_duration(active.start, now)}.`;
+        return `Clocked out of ${code} at ${fmt_time(now, contract?.timezone ?? null)}. Total: ${fmt_duration(active.start, now)}.`;
     }
     return "Server error - contact your admin";
 }
@@ -188,7 +195,7 @@ async function handle_get_status(hres: hresource): Promise<string> {
     const contract = await contract_coll.findOne({ _id: active.cont_id });
     const code = contract?.route_num ?? active.cont_id;
     const now = new Date();
-    return `Clocked in to ${code} since ${fmt_time(active.start)} (${fmt_duration(active.start, now)} elapsed).`;
+    return `Clocked in to ${code} since ${fmt_time(active.start, contract?.timezone ?? null)} (${fmt_duration(active.start, now)} elapsed).`;
 }
 
 async function handle_get_contracts(hres: hresource): Promise<string> {

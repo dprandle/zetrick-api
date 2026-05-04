@@ -12,7 +12,14 @@ const SUBC_ROLES: uid[] = [
 
 function hres_has_allowed_role(hr: hresource): boolean {
     for (const item of hr.allowed_roles) {
-        if (SUBC_ROLES.some((subc_item) => subc_item.source_str === item.source_str)) return true;
+        if (
+            SUBC_ROLES.some((subc_item) => {
+                const matches = subc_item.source_str === item.source_str;
+                dlog(`Checking ${subc_item.source_str} against ${subc_item.source_str}: ${matches}`);
+                return matches;
+            })
+        )
+            return true;
     }
     return false;
 }

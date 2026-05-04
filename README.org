@@ -1,23 +1,40 @@
-* Zetrick API                                                                                                                                       
-Express server running on the Zetrick dev droplet. Currently handles Twilio SMS webhooks for timesheet management (clock in/clock out). May expand to host additional internal APIs over time.
+* Zetrick API
+Fastify server handling Twilio SMS webhooks for timesheet management (clock in/clock out). May expand to host additional internal APIs over time.
 
-** Deployment   
-Hosted at =api.noblesteed.dev:444= on the Zetrick Digital Ocean droplet. Managed by systemd.
+** Deployment
+Managed by systemd on the Zetrick Digital Ocean droplet.
 
-*** Dependencies                                                                                                                                    
+| Environment | URL                       |
+|-------------|---------------------------|
+| Production  | =https://api.zetrick.com= |
+| Dev         | =https://api-dev.zetrick.com= |
+
+*** Dependencies
 - Node.js
+- MongoDB
 - nginx (SSL termination + reverse proxy)
-- Let's Encrypt cert for =api.noblesteed.dev=
+- Let's Encrypt cert for =api.zetrick.com= / =api-dev.zetrick.com=
+
+*** Environment Variables
+Required in the service environment (e.g. =/etc/systemd/system/zetrick-api.service= or a =.env= file):
+
+| Variable            | Description                          |
+|---------------------|--------------------------------------|
+| =MONGO_URI=         | MongoDB connection string            |
+| =MONGO_DB=          | Database name                        |
+| =MONGO_TIME_RECORDS= | Time records collection name        |
+| =MONGO_HRESOURCES=  | Human resources collection name      |
+| =MONGO_CONTRACTS=   | Contracts collection name            |
 
 *** Start / Stop / Restart
 
 #+begin_src sh
   systemctl start zetrick-api
-  systemctl stop zetrick-api                                                                                                                         
+  systemctl stop zetrick-api
   systemctl restart zetrick-api
 #+end_src
 
-*** After changing the service file                                                                                                                 
+*** After changing the service file
 
 #+begin_src sh
   systemctl daemon-reload && systemctl restart zetrick-api
@@ -36,4 +53,15 @@ Twilio webhook for inbound SMS messages. Used for timesheet clock in/clock out.
 
 Configure in Twilio console under Phone Numbers → Active Numbers → Messaging → A message comes in.
 
-Webhook URL: =https://api.noblesteed.dev:444/sms=
+Webhook URL: =https://api.zetrick.com/sms=
+
+**** Supported SMS Commands
+
+| Command       | Description                                      |
+|---------------|--------------------------------------------------|
+| =IN=          | Clock in (auto-selects contract if only one)     |
+| =IN <code>=   | Clock in to a specific contract by route number  |
+| =OUT=         | Clock out of current active entry                |
+| =STATUS=      | Check current clock-in status and elapsed time   |
+| =CONTRACTS=   | List all contracts assigned to your number       |
+| =HELP=        | Show available commands                          |

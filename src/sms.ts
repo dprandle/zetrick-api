@@ -26,7 +26,16 @@ function hres_has_allowed_role(hr: hresource): boolean {
 
 function twiml(message: string, from_phone_for_logging: string): string {
     ilog(`Replying to ${from_phone_for_logging}: ${message}`);
-    return `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n    <Message>${message}</Message>\n</Response>`;
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n    <Message>${escape_xml(message)}</Message>\n</Response>`;
+}
+
+function escape_xml(value: string): string {
+    return value
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&apos;");
 }
 
 function normalize_phone(phone: string): string {
@@ -36,6 +45,55 @@ function normalize_phone(phone: string): string {
 
 function tz_str(tz_bytes: number[]): string {
     return Buffer.from(tz_bytes).toString("utf8");
+}
+
+function get_local_date_parts(date: Date, tz_id: string): { year: string; month: string; day: string } {
+    const fmt = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz_id,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+    });
+    const parts = fmt.formatToParts(date);
+    const find_type = (type: string) => parts.find((elem) => elem.type === type)?.value;
+
+    const year = find_type("year");
+    const month = find_type("month");
+    const day = find_type("day");
+
+    if (!year || !month || !day) {
+        throw new Error(`Unable to derive local date parts for timezone ${tz_id}`);
+    }
+
+    return { year, month, day };
+}
+
+function timezone_offset_ms(date: Date, tz_id: string): number {
+    const fmt = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz_id,
+        timeZoneName: "shortOffset",
+        hour: "2-digit",
+        minute: "2-digit",
+    });
+    const tz_name = fmt.formatToParts(date).find((part) => part.type === "timeZoneName")?.value;
+
+    if (!tz_name) {
+        throw new Error(`Unable to derive timezone offset for ${tz_id}`);
+    }
+    if (tz_name === "GMT" || tz_name === "UTC") {
+        return 0;
+    }
+
+    const match = tz_name.match(/^GMT([+-])(\d{1,2})(?::?(\d{2}))?$/);
+    if (!match) {
+        throw new Error(`Unsupported timezone offset format for ${tz_id}: ${tz_name}`);
+    }
+
+    const [, sign, hours_str, mins_str] = match;
+    const hours = Number(hours_str);
+    const mins = Number(mins_str ?? "0");
+    const offset_ms = (hours * 60 + mins) * 60000;
+    return sign === "+" ? offset_ms : -offset_ms;
 }
 
 function fmt_time(date: Date, tz_bytes: number[] | null): string {
@@ -56,23 +114,10 @@ function fmt_duration(start: Date, end: Date): string {
 
 function day_start(start: Date, tz_bytes: number[]): Date {
     const tz_id = tz_str(tz_bytes);
-    const fmt = new Intl.DateTimeFormat("en-US", {
-        timeZone: tz_id,
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-    });
-    const fmt_parts = fmt.formatToParts(start);
-
-    const find_type = (type: string, parts: Intl.DateTimeFormatPart[]) => {
-        const val = parts.find((elem) => elem.type === type);
-        return val!.value;
-    };
-
-    const year = find_type("year", fmt_parts);
-    const month = find_type("month", fmt_parts);
-    const day = find_type("day", fmt_parts);
-    return new Date(`${year}-${month}-${day}T00:00:00Z`);
+    const { year, month, day } = get_local_date_parts(start, tz_id);
+    const utc_guess = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), 0, 0, 0, 0));
+    const offset_ms = timezone_offset_ms(utc_guess, tz_id);
+    return new Date(utc_guess.getTime() - offset_ms);
 }
 
 function format_date_for_log(dt: Date): string {
@@ -232,7 +277,18 @@ List your contracts
 `;
 
 async function handle_post_sms(req: FastifyRequest, reply: FastifyReply) {
-    const { From: from, Body: body } = req.body as Record<string, string>;
+    const body_obj = req.body;
+    if (!body_obj || typeof body_obj !== "object") {
+        reply.code(400).type("text/xml").send(twiml("Invalid request body.", "unknown"));
+        return;
+    }
+
+    const { From: from, Body: body } = body_obj as Record<string, unknown>;
+    if (typeof from !== "string" || typeof body !== "string" || from.trim() === "") {
+        reply.code(400).type("text/xml").send(twiml("Missing required SMS fields.", "unknown"));
+        return;
+    }
+
     ilog(`Received text from ${from}: ${body}`);
     const hres = await find_hres(from);
     if (!hres) {
@@ -276,6 +332,17 @@ async function handle_post_sms(req: FastifyRequest, reply: FastifyReply) {
 
 export function create_sms_routes(): FastifyPluginAsync {
     return async (fastify: FastifyInstance) => {
-        fastify.post("/sms", handle_post_sms);
+        fastify.post("/sms", {
+            schema: {
+                body: {
+                    type: "object",
+                    required: ["From", "Body"],
+                    properties: {
+                        From: { type: "string", minLength: 1 },
+                        Body: { type: "string" },
+                    },
+                },
+            },
+        }, handle_post_sms);
     };
 }

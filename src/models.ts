@@ -9,18 +9,20 @@ export interface change_info {
 
 export interface uobj_common {
     _id: string;
+    custom_params: Record<string, string>;
     archived_info: change_info;
     last_update: change_info;
     created: change_info;
+    schema_version: number;
 }
 
 export interface time_record extends uobj_common {
     hrid: string;
     cont_id: string;
+    notes: string;
     start: Date;
     end: Date;
     date: Date;
-    tsid: number;
 }
 
 export interface employment_date_info {

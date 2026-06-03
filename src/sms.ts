@@ -3,7 +3,9 @@ import { ObjectId, type Collection } from "mongodb";
 import { get_time_records, get_hresources, get_contracts } from "./db.js";
 import type { hresource, contract_route, time_record, uid } from "./models.js";
 
-const INVALID_DATE = new Date(-62135596800000);
+const INVALID_DATETIME = new Date(-62135596800000);
+const NOT_ARCHIVED = { by: { source_str: "" }, on: INVALID_DATETIME };
+
 const SUBC_ROLES: uid[] = [
     { source_str: "A_SC_Main_Carrier[021422170000UTC]" },
     { source_str: "B_SC_Sub_Carrier[021422170000UTC]" },
@@ -109,7 +111,7 @@ async function find_hres(phone: string): Promise<hresource | null> {
 }
 
 async function find_active_time_entry(hrid: string, time_coll: Collection<time_record>): Promise<time_record | null> {
-    return time_coll.findOne({ hrid, end: INVALID_DATE });
+    return time_coll.findOne({ hrid, end: INVALID_DATETIME });
 }
 
 async function handle_clock_in(hres: hresource, contract_code: string | null): Promise<string> {
@@ -149,15 +151,17 @@ async function handle_clock_in(hres: hresource, contract_code: string | null): P
     const change_now = { by: sys, on: now };
     const new_time_record: time_record = {
         _id: new ObjectId().toHexString(),
-        hrid: hres._id,
-        cont_id: contract._id,
-        start: now,
-        end: INVALID_DATE,
-        date: day_start(now, contract.timezone),
-        tsid: 0,
-        archived_info: null as any,
+        custom_params: {},
+        archived_info: NOT_ARCHIVED,
         last_update: change_now,
         created: change_now,
+        schema_version: 1,
+        hrid: hres._id,
+        cont_id: contract._id,
+        notes: "",
+        start: now,
+        end: INVALID_DATETIME,
+        date: day_start(now, contract.timezone),
     };
     const result = await time_coll.insertOne(new_time_record);
     if (result.acknowledged && result.insertedId === new_time_record._id) {

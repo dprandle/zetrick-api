@@ -4,7 +4,7 @@ import sms from "./sms.js";
 async function handle_post_sms(req: FastifyRequest, reply: FastifyReply) {
     const { From: from, Body: body } = req.body as Record<string, string>;
     ilog(`Received text from ${from}: ${body}`);
-    const resp = sms.process_message(from, body);
+    const resp = await sms.process_message(from, body);
     reply.type("text/xml").send(resp);
 }
 
@@ -35,9 +35,9 @@ async function handle_post_invitation(req: FastifyRequest<{ Body: invite_body }>
 
 export function create_time_tracking_routes(): FastifyPluginAsync {
     return async (fastify: FastifyInstance) => {
-        fastify.post("time-tracking/sms", handle_post_sms);
+        fastify.post("/time-tracking/sms", handle_post_sms);
         fastify.post<{ Body: invite_body }>(
-            "time-tracking/invitation",
+            "/time-tracking/invitation",
             { schema: { body: invite_body_schema } },
             handle_post_invitation
         );

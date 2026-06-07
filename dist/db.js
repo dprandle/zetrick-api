@@ -29,3 +29,4 @@ const mongo = {
     get_conts
 };
 export default mongo;
+//# sourceMappingURL=db.js.map

@@ -1,6 +1,5 @@
-import type { FastifyInstance, FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { ObjectId, type Collection } from "mongodb";
-import { get_time_records, get_hresources, get_contracts } from "./db.js";
+import mongo from "./db.js";
 import type { hresource, contract_route, time_record, uid } from "./models.js";
 
 const INVALID_DATE = new Date(-62135596800000);
@@ -103,7 +102,7 @@ async function find_user_contracts(hr: hresource, contracts: Collection<contract
 }
 
 async function find_hres(phone: string): Promise<hresource | null> {
-    const hr_coll = get_hresources();
+    const hr_coll = mongo.get_hresources();
     const phone_number = normalize_phone(phone);
     return hr_coll.findOne({ phone_number });
 }
@@ -113,8 +112,8 @@ async function find_active_time_entry(hrid: string, time_coll: Collection<time_r
 }
 
 async function handle_clock_in(hres: hresource, contract_code: string | null): Promise<string> {
-    const contract_coll = get_contracts();
-    const time_coll = get_time_records();
+    const contract_coll = mongo.get_conts();
+    const time_coll = mongo.get_trecs();
     const active = await find_active_time_entry(hres._id, time_coll);
     if (active) {
         const contract = await contract_coll.findOne({ _id: active.cont_id });
@@ -171,12 +170,12 @@ async function handle_clock_in(hres: hresource, contract_code: string | null): P
 }
 
 async function handle_clock_out(hres: hresource): Promise<string> {
-    const time_coll = get_time_records();
+    const time_coll = mongo.get_trecs();
     const active = await find_active_time_entry(hres._id, time_coll);
     if (!active) {
         return "You're not currently clocked in. To clock in reply:\nIN";
     }
-    const contract_coll = get_contracts();
+    const contract_coll = mongo.get_conts();
     const now = new Date();
     const change_now = { by: { source_str: hres._id }, on: now };
 
@@ -193,20 +192,21 @@ async function handle_clock_out(hres: hresource): Promise<string> {
     return "Server error - contact your admin";
 }
 
-async function handle_get_status(hres: hresource): Promise<string> {
-    const active = await find_active_time_entry(hres._id, get_time_records());
+
+async function handle_clock_status(hres: hresource): Promise<string> {
+    const active = await find_active_time_entry(hres._id, mongo.get_trecs());
     if (!active) {
         return "You're not currently clocked in. To clock in reply:\nIN";
     }
-    const contract_coll = get_contracts();
+    const contract_coll = mongo.get_conts();
     const contract = await contract_coll.findOne({ _id: active.cont_id });
     const code = contract?.route_num ?? active.cont_id;
     const now = new Date();
     return `Clocked in to ${code} since ${fmt_time(active.start, contract?.timezone ?? null)} (${fmt_duration(active.start, now)} elapsed).`;
 }
 
-async function handle_get_contracts(hres: hresource): Promise<string> {
-    const contract_coll = get_contracts();
+async function handle_contracts(hres: hresource): Promise<string> {
+    const contract_coll = mongo.get_conts();
     const user_contracts = await find_user_contracts(hres, contract_coll);
     if (user_contracts.length === 0) {
         return "You have no assigned contracts. Contact your admin.";
@@ -231,20 +231,16 @@ CONTRACTS
 List your contracts
 `;
 
-async function handle_post_sms(req: FastifyRequest, reply: FastifyReply) {
-    const { From: from, Body: body } = req.body as Record<string, string>;
-    ilog(`Received text from ${from}: ${body}`);
-    const hres = await find_hres(from);
+async function process_message(from_phone: string, message: string) {
+    const hres = await find_hres(from_phone);
     if (!hres) {
-        reply.type("text/xml").send(twiml("Your number is not registered. Contact your admin.", from));
-        return;
+        return twiml("Your number is not registered. Contact your admin.", from_phone);
     } else if (!hres_has_allowed_role(hres)) {
-        reply.type("text/xml").send(twiml("Your number is not configured properly. Contact your admin.", from));
-        return;
+        return twiml("Your number is not configured properly. Contact your admin.", from_phone);
     }
-    ilog(`Matched ${from} to ${hres.first_name} ${hres.last_name} (${hres._id})`);
+    ilog(`Matched ${from_phone} to ${hres.first_name} ${hres.last_name} (${hres._id})`);
 
-    const cleaned = body.replace(/[^a-zA-Z0-9\s]/g, "").trim();
+    const cleaned = message.replace(/[^a-zA-Z0-9\s]/g, "").trim();
 
     const parts = cleaned.split(/\s+/);
     let response: string = `Unsupported message format. Please send a commands in following format:\n\n${HELP_MSG}`;
@@ -259,10 +255,10 @@ async function handle_post_sms(req: FastifyRequest, reply: FastifyReply) {
                 response = await handle_clock_out(hres);
                 break;
             case "STATUS":
-                response = await handle_get_status(hres);
+                response = await handle_clock_status(hres);
                 break;
             case "CONTRACTS":
-                response = await handle_get_contracts(hres);
+                response = await handle_contracts(hres);
                 break;
             case "HELP":
                 response = `The following commands are available:\n\n${HELP_MSG}`;
@@ -271,11 +267,10 @@ async function handle_post_sms(req: FastifyRequest, reply: FastifyReply) {
                 response = `Unknown command "${parts[0]}" Please use one of the following commands:\n\n${HELP_MSG}`;
         }
     }
-    reply.type("text/xml").send(twiml(response, from));
+    return twiml(response, from_phone);
 }
 
-export function create_sms_routes(): FastifyPluginAsync {
-    return async (fastify: FastifyInstance) => {
-        fastify.post("/sms", handle_post_sms);
-    };
+const sms = {
+    process_message,
 }
+export default sms;

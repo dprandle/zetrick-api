@@ -1,5 +1,5 @@
-import type { FastifyInstance, FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
-import sms from "./sms.js"
+import type { FastifyInstance, FastifyPluginAsync, FastifyRequest, FastifyReply, FastifySchema } from "fastify";
+import sms from "./sms.js";
 
 async function handle_post_sms(req: FastifyRequest, reply: FastifyReply) {
     const { From: from, Body: body } = req.body as Record<string, string>;
@@ -8,8 +8,38 @@ async function handle_post_sms(req: FastifyRequest, reply: FastifyReply) {
     reply.type("text/xml").send(resp);
 }
 
+type contact_method = "sms" | "email";
+
+type invite_body = {
+    hres_id: string;
+    contact_method: contact_method;
+};
+
+// Fastify validates the body against this before our handler runs, so the
+// handler can trust hres_id is a non-empty string and contact_method is valid.
+const invite_body_schema = {
+    type: "object",
+    required: ["hres_id", "contact_method"],
+    additionalProperties: false,
+    properties: {
+        hres_id: { type: "string", minLength: 1 },
+        contact_method: { type: "string", enum: ["sms", "email"] },
+    },
+} as const;
+
+async function handle_post_invitation(req: FastifyRequest<{ Body: invite_body }>, reply: FastifyReply) {
+    const { contact_method, hres_id } = req.body;
+    ilog(`Received api call with contact_method:${contact_method} and hres_id:${hres_id}`);
+    reply.send({ ok: true, message: `Received api call with contact_method:${contact_method} and hres_id:${hres_id}` });
+}
+
 export function create_time_tracking_routes(): FastifyPluginAsync {
     return async (fastify: FastifyInstance) => {
         fastify.post("time-tracking/sms", handle_post_sms);
+        fastify.post<{ Body: invite_body }>(
+            "time-tracking/invitation",
+            { schema: { body: invite_body_schema } },
+            handle_post_invitation
+        );
     };
 }

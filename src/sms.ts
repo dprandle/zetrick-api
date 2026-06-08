@@ -1,21 +1,18 @@
-import type { FastifyInstance, FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { ObjectId, type Collection } from "mongodb";
-import { get_time_records, get_hresources, get_contracts } from "./db.js";
-import type { hresource, contract_route, time_record, uid } from "./models.js";
+import mongo from "./db.js";
+import {
+    type hresource,
+    type contract_route,
+    type time_record,
+    make_ci_not_archived,
+    make_ci_now,
+    TIME_RECORD_SCHEMA_VERSION,
+    can_track_time_via_sms,
+    get_current_route_name,
+} from "./models.js";
 
-const INVALID_DATE = new Date(-62135596800000);
-const SUBC_ROLES: uid[] = [
-    { source_str: "A_SC_Main_Carrier[021422170000UTC]" },
-    { source_str: "B_SC_Sub_Carrier[021422170000UTC]" },
-    { source_str: "C_SC_Previous_Carrier[021422170000UTC]" },
-];
+const INVALID_DATETIME = new Date(-62135596800000);
 
-function hres_has_allowed_role(hr: hresource): boolean {
-    for (const item of hr.allowed_roles) {
-        if (SUBC_ROLES.some((subc_item) => subc_item.source_str === item.source_str)) return true;
-    }
-    return false;
-}
 
 function twiml(message: string, from_phone_for_logging: string): string {
     ilog(`Replying to ${from_phone_for_logging}: ${message}`);
@@ -87,31 +84,40 @@ function wrap_ltgt(word: string) {
     return "&lt;" + word + "&gt;";
 }
 
+function get_best_route_str(c: contract_route) {
+    return c.route_num || get_current_route_name(c);
+}
+
 async function find_user_contracts(hr: hresource, contracts: Collection<contract_route>): Promise<contract_route[]> {
-    const role_filter_objs = SUBC_ROLES.map((r) => {
+    const role_filter_objs = hr.allowed_roles.map((r) => {
         return { [`assignments.${r.source_str}.emp_id`]: hr._id };
     });
     const filter = { $or: role_filter_objs };
     return contracts.find(filter).toArray();
 }
 
-async function find_hres(phone: string): Promise<hresource | null> {
-    const hr_coll = get_hresources();
+async function find_qualified_hres(phone: string): Promise<hresource | string> {
+    const hr_coll = mongo.get_hresources();
     const phone_number = normalize_phone(phone);
-    return hr_coll.findOne({ phone_number });
+    const hrlist = await hr_coll.find({ phone_number }).toArray();
+    if (hrlist.length === 0) return "Your number is not registered. Contact your admin.";
+    const with_flag = hrlist.filter((hr) => can_track_time_via_sms(hr.tt_flags, hr.archived_info.on));
+    if (with_flag.length === 0) return "SMS time tracking is currently disabled for your number. Contact your admin.";
+    if (with_flag.length > 1) return "Your number matches multiple records and must be resolved. Contact your admin";
+    return with_flag[0];
 }
 
 async function find_active_time_entry(hrid: string, time_coll: Collection<time_record>): Promise<time_record | null> {
-    return time_coll.findOne({ hrid, end: INVALID_DATE });
+    return time_coll.findOne({ hrid, end: INVALID_DATETIME });
 }
 
 async function handle_clock_in(hres: hresource, contract_code: string | null): Promise<string> {
-    const contract_coll = get_contracts();
-    const time_coll = get_time_records();
+    const contract_coll = mongo.get_conts();
+    const time_coll = mongo.get_trecs();
     const active = await find_active_time_entry(hres._id, time_coll);
     if (active) {
         const contract = await contract_coll.findOne({ _id: active.cont_id });
-        const code = contract?.route_num ?? active.cont_id;
+        const code = contract ? get_best_route_str(contract) : active.cont_id;
         const tz = contract?.timezone ?? null;
         const time = fmt_time(active.start, tz);
         return `You're already clocked in to ${code} (since ${time}). To clock out reply:\nOUT`;
@@ -125,32 +131,33 @@ async function handle_clock_in(hres: hresource, contract_code: string | null): P
     let contract: contract_route | undefined;
 
     if (contract_code) {
-        contract = user_contracts.find((c) => c.route_num.toLowerCase() === contract_code.toLowerCase());
+        contract = user_contracts.find((c) => get_best_route_str(c).toLowerCase() === contract_code.toLowerCase());
         if (!contract) {
-            const codes = user_contracts.map((c) => c.route_num).join("\n");
+            const codes = user_contracts.map((c) => get_best_route_str(c).toUpperCase()).join("\n");
             return `Unknown contract "${contract_code}".\n\nYour contracts:\n${codes}`;
         }
     } else if (user_contracts.length === 1) {
         contract = user_contracts[0];
     } else {
-        const codes = user_contracts.map((c) => c.route_num).join("\n");
+        const codes = user_contracts.map((c) => get_best_route_str(c).toUpperCase()).join("\n");
         return `Which contract?\n\nYour contracts:\n${codes}\n\nTo clock in reply:\nIN ${wrap_ltgt("code")}`;
     }
 
     const now = new Date();
-    const sys = { source_str: "sms" };
-    const change_now = { by: sys, on: now };
+    const change_now = make_ci_now();
     const new_time_record: time_record = {
         _id: new ObjectId().toHexString(),
-        hrid: hres._id,
-        cont_id: contract._id,
-        start: now,
-        end: INVALID_DATE,
-        date: day_start(now, contract.timezone),
-        tsid: 0,
-        archived_info: null as any,
+        custom_params: {},
+        archived_info: make_ci_not_archived(),
         last_update: change_now,
         created: change_now,
+        schema_version: TIME_RECORD_SCHEMA_VERSION,
+        hrid: hres._id,
+        cont_id: contract._id,
+        notes: "",
+        start: now,
+        end: INVALID_DATETIME,
+        date: day_start(now, contract.timezone),
     };
     const result = await time_coll.insertOne(new_time_record);
     if (result.acknowledged && result.insertedId === new_time_record._id) {
@@ -158,18 +165,18 @@ async function handle_clock_in(hres: hresource, contract_code: string | null): P
             `Created timesheet ${new_time_record._id} for ${new_time_record.hrid} (start: ${format_date_for_log(new_time_record.start)})`
         );
         const auto_note = user_contracts.length === 1 && !contract_code ? " (your only contract)" : "";
-        return `Clocked in to ${contract.route_num}${auto_note} at ${fmt_time(now, contract.timezone)}. Reply OUT when done.`;
+        return `Clocked in to ${get_best_route_str(contract)}${auto_note} at ${fmt_time(now, contract.timezone)}. Reply OUT when done.`;
     }
     return `Clock in failed - server error`;
 }
 
 async function handle_clock_out(hres: hresource): Promise<string> {
-    const time_coll = get_time_records();
+    const time_coll = mongo.get_trecs();
     const active = await find_active_time_entry(hres._id, time_coll);
     if (!active) {
         return "You're not currently clocked in. To clock in reply:\nIN";
     }
-    const contract_coll = get_contracts();
+    const contract_coll = mongo.get_conts();
     const now = new Date();
     const change_now = { by: { source_str: hres._id }, on: now };
 
@@ -179,32 +186,32 @@ async function handle_clock_out(hres: hresource): Promise<string> {
     );
     if (updated_result.acknowledged && updated_result.matchedCount == updated_result.modifiedCount) {
         const contract = await contract_coll.findOne({ _id: active.cont_id });
-        const code = contract?.route_num ?? active.cont_id;
+        const code = contract ? get_best_route_str(contract) : active.cont_id;
         ilog(`Updated timesheet ${active._id} for ${hres._id} (end: ${format_date_for_log(now)})`);
         return `Clocked out of ${code} at ${fmt_time(now, contract?.timezone ?? null)}. Total: ${fmt_duration(active.start, now)}.`;
     }
     return "Server error - contact your admin";
 }
 
-async function handle_get_status(hres: hresource): Promise<string> {
-    const active = await find_active_time_entry(hres._id, get_time_records());
+async function handle_clock_status(hres: hresource): Promise<string> {
+    const active = await find_active_time_entry(hres._id, mongo.get_trecs());
     if (!active) {
         return "You're not currently clocked in. To clock in reply:\nIN";
     }
-    const contract_coll = get_contracts();
+    const contract_coll = mongo.get_conts();
     const contract = await contract_coll.findOne({ _id: active.cont_id });
-    const code = contract?.route_num ?? active.cont_id;
+    const code = contract ? get_best_route_str(contract) : active.cont_id;
     const now = new Date();
     return `Clocked in to ${code} since ${fmt_time(active.start, contract?.timezone ?? null)} (${fmt_duration(active.start, now)} elapsed).`;
 }
 
-async function handle_get_contracts(hres: hresource): Promise<string> {
-    const contract_coll = get_contracts();
+async function handle_contracts(hres: hresource): Promise<string> {
+    const contract_coll = mongo.get_conts();
     const user_contracts = await find_user_contracts(hres, contract_coll);
     if (user_contracts.length === 0) {
         return "You have no assigned contracts. Contact your admin.";
     }
-    const list = user_contracts.map((c) => c.route_num).join("\n");
+    const list = user_contracts.map((c) => get_best_route_str(c).toUpperCase()).join("\n");
     return `Your contracts:\n${list}\n\n`;
 }
 
@@ -224,21 +231,13 @@ CONTRACTS
 List your contracts
 `;
 
-async function handle_post_sms(req: FastifyRequest, reply: FastifyReply) {
-    const { From: from, Body: body } = req.body as Record<string, string>;
-    ilog(`Received text from ${from}: ${body}`);
-    const hres = await find_hres(from);
-    if (!hres) {
-        reply.type("text/xml").send(twiml("Your number is not registered. Contact your admin.", from));
-        return;
-    } else if (!hres_has_allowed_role(hres)) {
-        reply.type("text/xml").send(twiml("Your number is not configured properly. Contact your admin.", from));
-        return;
-    }
-    ilog(`Matched ${from} to ${hres.first_name} ${hres.last_name} (${hres._id})`);
+async function process_message(from_phone: string, message: string) {
+    const qual_result: hresource | string = await find_qualified_hres(from_phone);
+    if (typeof qual_result === "string") return twiml(qual_result, from_phone);
+    const hres: hresource = qual_result;
+    ilog(`Matched ${from_phone} to ${hres.first_name} ${hres.last_name} (${hres._id})`);
 
-    const cleaned = body.replace(/[^a-zA-Z0-9\s]/g, "").trim();
-
+    const cleaned = message.replace(/[^a-zA-Z0-9\s]/g, "").trim();
     const parts = cleaned.split(/\s+/);
     let response: string = `Unsupported message format. Please send a commands in following format:\n\n${HELP_MSG}`;
     if (parts.length <= 2) {
@@ -252,10 +251,10 @@ async function handle_post_sms(req: FastifyRequest, reply: FastifyReply) {
                 response = await handle_clock_out(hres);
                 break;
             case "STATUS":
-                response = await handle_get_status(hres);
+                response = await handle_clock_status(hres);
                 break;
             case "CONTRACTS":
-                response = await handle_get_contracts(hres);
+                response = await handle_contracts(hres);
                 break;
             case "HELP":
                 response = `The following commands are available:\n\n${HELP_MSG}`;
@@ -264,11 +263,10 @@ async function handle_post_sms(req: FastifyRequest, reply: FastifyReply) {
                 response = `Unknown command "${parts[0]}" Please use one of the following commands:\n\n${HELP_MSG}`;
         }
     }
-    reply.type("text/xml").send(twiml(response, from));
+    return twiml(response, from_phone);
 }
 
-export function create_sms_routes(): FastifyPluginAsync {
-    return async (fastify: FastifyInstance) => {
-        fastify.post("/sms", handle_post_sms);
-    };
-}
+const sms = {
+    process_message,
+};
+export default sms;

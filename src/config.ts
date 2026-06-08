@@ -11,5 +11,8 @@ export const config = {
         time_records: require_env_string("MONGO_TIME_RECORDS"),
         hresources: require_env_string("MONGO_HRESOURCES"),
         contracts: require_env_string("MONGO_CONTRACTS")
+    },
+    invitation: {
+        auth_token: require_env_string("INVITATION_AUTH_TOKEN")
     }
 };

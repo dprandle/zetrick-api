@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest, FastifyReply, FastifySchema } from "fastify";
+
 import sms from "./sms.js";
 
 async function handle_post_sms(req: FastifyRequest, reply: FastifyReply) {
@@ -27,10 +28,26 @@ const invite_body_schema = {
     },
 } as const;
 
+type qbt_invite_response = {
+    message: string;
+};
+
 async function handle_post_invitation(req: FastifyRequest<{ Body: invite_body }>, reply: FastifyReply) {
     const { contact_method, hres_id } = req.body;
     ilog(`Received api call with contact_method:${contact_method} and hres_id:${hres_id}`);
-    reply.send({ ok: true, message: `Received api call with contact_method:${contact_method} and hres_id:${hres_id}` });
+    try {
+        const result = await fetch("http://localhost:3001/invitation", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(req.body),
+        });
+        const data: qbt_invite_response = await result.json();
+        return { ok: result.ok, message: data.message };
+    } catch (err) {
+        return reply.code(501).send(err);
+    }
 }
 
 export function create_time_tracking_routes(): FastifyPluginAsync {

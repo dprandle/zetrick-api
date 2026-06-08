@@ -1,6 +1,17 @@
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest, FastifyReply, FastifySchema } from "fastify";
 
 import sms from "./sms.js";
+import { config } from "./config.js";
+
+// Rejects the request unless it carries the configured bearer token in the
+// Authorization header. Used to guard the invitation route.
+async function require_bearer_auth(req: FastifyRequest, reply: FastifyReply) {
+    const header = req.headers.authorization;
+    const expected = `Bearer ${config.invitation.auth_token}`;
+    if (header !== expected) {
+        return reply.code(401).send({ message: "Unauthorized" });
+    }
+}
 
 async function handle_post_sms(req: FastifyRequest, reply: FastifyReply) {
     const { From: from, Body: body } = req.body as Record<string, string>;
@@ -55,7 +66,7 @@ export function create_time_tracking_routes(): FastifyPluginAsync {
         fastify.post("/time-tracking/sms", handle_post_sms);
         fastify.post<{ Body: invite_body }>(
             "/time-tracking/invitation",
-            { schema: { body: invite_body_schema } },
+            { preHandler: require_bearer_auth, schema: { body: invite_body_schema } },
             handle_post_invitation
         );
     };

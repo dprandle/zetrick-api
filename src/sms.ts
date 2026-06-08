@@ -2,23 +2,17 @@ import { ObjectId, type Collection } from "mongodb";
 import mongo from "./db.js";
 import {
     type hresource,
-    TIME_TRACKING_SMS,
     type contract_route,
     type time_record,
-    type uid,
     make_ci_not_archived,
     make_ci_now,
     TIME_RECORD_SCHEMA_VERSION,
-    is_active,
+    can_track_time_via_sms,
     get_current_route_name,
 } from "./models.js";
 
 const INVALID_DATETIME = new Date(-62135596800000);
 
-export function can_track_time_via_sms(tt_flags: number, archived_on: Date): boolean {
-    const tracking_enabled = (tt_flags & TIME_TRACKING_SMS) !== 0;
-    return is_active(archived_on) && tracking_enabled;
-}
 
 function twiml(message: string, from_phone_for_logging: string): string {
     ilog(`Replying to ${from_phone_for_logging}: ${message}`);

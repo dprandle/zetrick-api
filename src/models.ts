@@ -107,3 +107,20 @@ export function get_current_route_name(cont: contract_route): string {
     const ind = find_value_change_item(cont.route_names, new Date());
     return ind !== INVALID_IND ? cont.route_names[ind].val : "";
 }
+
+export function is_tracking_enabled(tt_flags: number, flag: number) {
+    return ((tt_flags & flag) !== 0);
+}
+
+export function can_track_time(tt_flags: number, archived_on: Date, flag: number): boolean {
+    const tracking_enabled = is_tracking_enabled(tt_flags, flag);
+    return is_active(archived_on) && tracking_enabled;
+}
+
+export function can_track_time_via_sms(tt_flags: number, archived_on: Date): boolean {
+    return can_track_time(tt_flags, archived_on, TIME_TRACKING_SMS);
+}
+
+export function can_track_time_via_qbt(tt_flags: number, archived_on: Date): boolean {
+    return can_track_time(tt_flags, archived_on, TIME_TRACKING_APP);
+}

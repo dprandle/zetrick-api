@@ -109,7 +109,7 @@ export function get_current_route_name(cont: contract_route): string {
 }
 
 export function is_tracking_enabled(tt_flags: number, flag: number) {
-    return ((tt_flags & flag) !== 0);
+    return (tt_flags & flag) !== 0;
 }
 
 export function can_track_time(tt_flags: number, archived_on: Date, flag: number): boolean {

@@ -13,6 +13,9 @@ import {
 
 const INVALID_DATETIME = new Date(-62135596800000);
 
+const EMPLOYEE_ACTIVE_CARRIER_ROLES = new Set(["A_Main_Carrier[021422170000UTC]", "B_Sub_Carrier[021422170000UTC]"]);
+const SUBC_ACTIVE_CARRIER_ROLES = new Set(["A_SC_Main_Carrier[021422170000UTC]", "B_SC_Sub_Carrier[021422170000UTC]"]);
+const ACTIVE_CARRIER_ROLES = new Set([...EMPLOYEE_ACTIVE_CARRIER_ROLES, ...SUBC_ACTIVE_CARRIER_ROLES]);
 
 function twiml(message: string, from_phone_for_logging: string): string {
     ilog(`Replying to ${from_phone_for_logging}: ${message}`);
@@ -89,7 +92,10 @@ function get_best_route_str(c: contract_route) {
 }
 
 async function find_user_contracts(hr: hresource, contracts: Collection<contract_route>): Promise<contract_route[]> {
-    const role_filter_objs = hr.allowed_roles.map((r) => {
+    // Narrow hr allowed roles to only active ones
+    const active_allowed_roles = hr.allowed_roles.filter((r) => ACTIVE_CARRIER_ROLES.has(r.source_str));
+    // Create our filter from the narrowed roles
+    const role_filter_objs = active_allowed_roles.map((r) => {
         return { [`assignments.${r.source_str}.emp_id`]: hr._id };
     });
     const filter = { $or: role_filter_objs };

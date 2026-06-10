@@ -21,9 +21,9 @@ const ACTIVE_CARRIER_ROLES = new Set([...EMPLOYEE_ACTIVE_CARRIER_ROLES, ...SUBC_
 
 const client = twilio(config.twilio.account_sid, config.twilio.auth_token);
 
-const MENU_MSG = `Commands:
+const MENU_MSG = `Commands (case insensitive):
 IN → clock in (single contract)
-IN HCRXX → clock in to HCRXX
+IN [contract] → clock in to contract
 OUT → clock out
 STATUS → current clock status
 CONTRACTS → list your contracts
@@ -164,7 +164,7 @@ async function handle_clock_in(hres: hresource, contract_code: string | null): P
         const code = contract ? get_best_route_str(contract) : active.cont_id;
         const tz = contract?.timezone ?? null;
         const time = fmt_time(active.start, tz);
-        return `You're already clocked in to ${code} (since ${time}). To clock out reply:\nOUT`;
+        return `You're already clocked in to ${code} (since ${time}). To clock out reply OUT`;
     }
 
     const user_contracts = await find_user_contracts(hres, contract_coll);
@@ -178,13 +178,13 @@ async function handle_clock_in(hres: hresource, contract_code: string | null): P
         contract = user_contracts.find((c) => get_best_route_str(c).toLowerCase() === contract_code.toLowerCase());
         if (!contract) {
             const codes = user_contracts.map((c) => get_best_route_str(c).toUpperCase()).join("\n");
-            return `Unknown contract "${contract_code}".\n\nYour contracts:\n${codes}`;
+            return `Unknown contract "${contract_code}".\nYour contracts:\n${codes}`;
         }
     } else if (user_contracts.length === 1) {
         contract = user_contracts[0];
     } else {
         const codes = user_contracts.map((c) => get_best_route_str(c).toUpperCase()).join("\n");
-        return `Which contract?\n\nYour contracts:\n${codes}\n\nTo clock in reply:\nIN ${wrap_ltgt("code")}`;
+        return `Which contract?\nYour contracts:\n${codes}\nTo clock in reply IN [contract]`;
     }
 
     const now = new Date();
@@ -218,7 +218,7 @@ async function handle_clock_out(hres: hresource): Promise<string> {
     const time_coll = mongo.get_trecs();
     const active = await find_active_time_entry(hres._id, time_coll);
     if (!active) {
-        return "You're not currently clocked in. To clock in reply:\nIN";
+        return "You're not currently clocked in. To clock in reply IN";
     }
     const contract_coll = mongo.get_conts();
     const now = new Date();
@@ -240,7 +240,7 @@ async function handle_clock_out(hres: hresource): Promise<string> {
 async function handle_clock_status(hres: hresource): Promise<string> {
     const active = await find_active_time_entry(hres._id, mongo.get_trecs());
     if (!active) {
-        return "You're not currently clocked in. To clock in reply:\nIN";
+        return "You're not currently clocked in. To clock in reply IN";
     }
     const contract_coll = mongo.get_conts();
     const contract = await contract_coll.findOne({ _id: active.cont_id });
@@ -256,7 +256,7 @@ async function handle_contracts(hres: hresource): Promise<string> {
         return "You have no assigned contracts. Contact your admin.";
     }
     const list = user_contracts.map((c) => get_best_route_str(c).toUpperCase()).join("\n");
-    return `Your contracts:\n${list}\n\n`;
+    return `Your contracts:\n${list}`;
 }
 
 async function process_message(from_phone: string, message: string) {

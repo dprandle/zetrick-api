@@ -106,6 +106,18 @@ function day_start(start: Date, tz_bytes: number[]): Date {
     return new Date(`${year}-${month}-${day}T00:00:00Z`);
 }
 
+function fmt_since(start: Date, now: Date, tz_bytes: number[] | null): string {
+    const time = fmt_time(start, tz_bytes);
+    if (!tz_bytes) return time;
+    const start_day = day_start(start, tz_bytes);
+    const now_day = day_start(now, tz_bytes);
+    const diff_days = Math.round((now_day.getTime() - start_day.getTime()) / 86400000);
+    if (diff_days <= 0) return time;
+    if (diff_days === 1) return `yesterday at ${time}`;
+    const date_str = start.toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", timeZone: tz_str(tz_bytes) });
+    return `${date_str} at ${time}`;
+}
+
 function format_date_for_log(dt: Date): string {
     const formatted =
         new Intl.DateTimeFormat("en-US", {
@@ -163,8 +175,8 @@ async function handle_clock_in(hres: hresource, contract_code: string | null): P
         const contract = await contract_coll.findOne({ _id: active.cont_id });
         const code = contract ? get_best_route_str(contract) : active.cont_id;
         const tz = contract?.timezone ?? null;
-        const time = fmt_time(active.start, tz);
-        return `You're already clocked in to ${code} (since ${time}). To clock out reply OUT`;
+        const since = fmt_since(active.start, new Date(), tz);
+        return `You're already clocked in to ${code} (since ${since}). To clock out reply OUT`;
     }
 
     const user_contracts = await find_user_contracts(hres, contract_coll);
@@ -246,7 +258,8 @@ async function handle_clock_status(hres: hresource): Promise<string> {
     const contract = await contract_coll.findOne({ _id: active.cont_id });
     const code = contract ? get_best_route_str(contract) : active.cont_id;
     const now = new Date();
-    return `Clocked in to ${code} since ${fmt_time(active.start, contract?.timezone ?? null)} (${fmt_duration(active.start, now)} elapsed).`;
+    const since = fmt_since(active.start, now, contract?.timezone ?? null);
+    return `Clocked in to ${code} since ${since} (${fmt_duration(active.start, now)} elapsed).`;
 }
 
 async function handle_contracts(hres: hresource): Promise<string> {

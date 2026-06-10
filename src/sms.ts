@@ -23,7 +23,7 @@ const client = twilio(config.twilio.account_sid, config.twilio.auth_token);
 
 const MENU_MSG = `Commands:
 IN → clock in (single contract)
-IN ${wrap_ltgt("contract")} → clock in to <contract>
+IN HCRXX → clock in to HCRXX
 OUT → clock out
 STATUS → current clock status
 CONTRACTS → list your contracts

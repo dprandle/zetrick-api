@@ -5,6 +5,7 @@ function require_env_string(name: string): string {
 }
 
 export const config = {
+    env: require_env_string("ENV"),
     mongo: {
         uri: require_env_string("MONGO_URI"),
         db_name: require_env_string("MONGO_DB"),

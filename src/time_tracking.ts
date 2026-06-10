@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest, FastifyReply, FastifySchema } from "fastify";
 import sms from "./sms.js";
-import inv, {TT_SELECTIONS, type tt_selection} from "./invitation.js"
+import inv, { TT_SELECTIONS, type tt_selection } from "./invitation.js";
 import { config } from "./config.js";
 
 // Rejects the request unless it carries the configured bearer token in the
@@ -21,7 +21,7 @@ async function handle_post_sms(req: FastifyRequest, reply: FastifyReply) {
 }
 
 const CONTACT_METHODS = ["sms", "email"] as const;
-type contact_method = typeof CONTACT_METHODS[number];
+type contact_method = (typeof CONTACT_METHODS)[number];
 
 type invite_body = {
     hres_id: string;
@@ -38,18 +38,34 @@ const invite_body_schema = {
     properties: {
         hres_id: { type: "string", minLength: 1 },
         contact_method: { type: "string", enum: CONTACT_METHODS },
-        type: {type: "string", enum: TT_SELECTIONS},
+        type: { type: "string", enum: TT_SELECTIONS },
     },
 } as const;
 
 async function handle_post_invitation(req: FastifyRequest<{ Body: invite_body }>, reply: FastifyReply) {
     //const { contact_method, hres_id, type } = req.body;
-    ilog(`Received api call with contact_method:${req.body.contact_method} hres_id:${req.body.hres_id} type:${req.body.type}`);
-    try {
-        const result = await inv.process_invitation(req.body.contact_method, req.body.hres_id, req.body.type);
-        return reply.code(result.status).send({ok: result.ok, message: result.message});
-    } catch (err: any) {
-        return reply.code(501).send(err);
+    ilog(
+        `Received api call with contact_method:${req.body.contact_method} hres_id:${req.body.hres_id} type:${req.body.type}`
+    );
+    if (req.body.type == "qbt") {
+        try {
+            const result = await inv.process_invitation(req.body.contact_method, req.body.hres_id, req.body.type);
+            return reply.code(result.status).send({ ok: result.ok, message: result.message });
+        } catch (err: any) {
+            return reply.code(501).send(err);
+        }
+    } else {
+        try {
+            const result = await sms.send_invitation(req.body.hres_id);
+            return reply
+                .code(201)
+                .send({
+                    ok: true,
+                    message: `Successfully created sms at ${result.created} -- sid:${result.sid} status:${result.status}`,
+                });
+        } catch (err: any) {
+            return reply.code(404).send(err);
+        }
     }
 }
 

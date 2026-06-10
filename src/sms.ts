@@ -1,5 +1,7 @@
 import { ObjectId, type Collection } from "mongodb";
 import mongo from "./db.js";
+import twilio from "twilio";
+import { config } from "./config.js";
 import {
     type hresource,
     type contract_route,
@@ -16,6 +18,50 @@ const INVALID_DATETIME = new Date(-62135596800000);
 const EMPLOYEE_ACTIVE_CARRIER_ROLES = new Set(["A_Main_Carrier[021422170000UTC]", "B_Sub_Carrier[021422170000UTC]"]);
 const SUBC_ACTIVE_CARRIER_ROLES = new Set(["A_SC_Main_Carrier[021422170000UTC]", "B_SC_Sub_Carrier[021422170000UTC]"]);
 const ACTIVE_CARRIER_ROLES = new Set([...EMPLOYEE_ACTIVE_CARRIER_ROLES, ...SUBC_ACTIVE_CARRIER_ROLES]);
+
+const client = twilio(config.twilio.account_sid, config.twilio.auth_token);
+
+const MENU_MSG = `Commands:
+IN - clock in (single contract)
+IN ${wrap_ltgt("contract")} - clock in to specific contract
+OUT - clock out
+STATUS - current clock status
+CONTRACTS - list your contracts
+MENU - show this list`;
+
+type sms_send_result = {
+    sid: string;
+    status: string;
+    created: Date;
+};
+
+async function send_message(number: string, body: string): Promise<sms_send_result> {
+    try {
+        ilog(`Sending sms to ${number}: ${body}`);
+        const message = await client.messages.create({
+            messagingServiceSid: config.twilio.message_service_sid,
+            to: `+1${normalize_phone(number)}`,
+            body,
+        });
+        ilog(`Successfully sent message at ${message.dateCreated} - sid: ${message.sid} status: ${message.status}`);
+        return { sid: message.sid, status: message.status, created: message.dateCreated };
+    } catch (err: any) {
+        console.error("Error sending SMS:", err.message);
+        throw err;
+    }
+}
+
+async function send_invitation(hres_id: string): Promise<sms_send_result> {
+    const hr = await mongo.get_hresources().findOne({ _id: hres_id });
+    if (!hr) throw new Error("Invalid hres id");
+    if (!can_track_time_via_sms(hr.tt_flags, hr.archived_info.on))
+        throw new Error("SMS time tracking is not enabled for hres");
+    const result = await send_message(
+        config.env === "prod" ? hr.phone_number : "+19076874045",
+        `Welcome to Zetrick's SMS clock-in system!\n${MENU_MSG}`
+    );
+    return result;
+}
 
 function twiml(message: string, from_phone_for_logging: string): string {
     ilog(`Replying to ${from_phone_for_logging}: ${message}`);
@@ -221,22 +267,6 @@ async function handle_contracts(hres: hresource): Promise<string> {
     return `Your contracts:\n${list}\n\n`;
 }
 
-const HELP_MSG = `IN
-Clock in (single contract)
-
-IN ${wrap_ltgt("code")}
-Clock in to contract
-
-OUT
-Clock out
-
-STATUS
-Check current clock status
-
-CONTRACTS
-List your contracts
-`;
-
 async function process_message(from_phone: string, message: string) {
     const qual_result: hresource | string = await find_qualified_hres(from_phone);
     if (typeof qual_result === "string") return twiml(qual_result, from_phone);
@@ -245,7 +275,7 @@ async function process_message(from_phone: string, message: string) {
 
     const cleaned = message.replace(/[^a-zA-Z0-9\s]/g, "").trim();
     const parts = cleaned.split(/\s+/);
-    let response: string = `Unsupported message format. Please send a commands in following format:\n\n${HELP_MSG}`;
+    let response: string = `Unsupported message format. Please send a commands in following format:\n\n${MENU_MSG}`;
     if (parts.length <= 2) {
         const keyword = parts[0]?.toUpperCase() ?? null;
         const arg = parts[1] ?? null;
@@ -262,11 +292,11 @@ async function process_message(from_phone: string, message: string) {
             case "CONTRACTS":
                 response = await handle_contracts(hres);
                 break;
-            case "HELP":
-                response = `The following commands are available:\n\n${HELP_MSG}`;
+            case "MENU":
+                response = MENU_MSG;
                 break;
             default:
-                response = `Unknown command "${parts[0]}" Please use one of the following commands:\n\n${HELP_MSG}`;
+                response = `Unknown command "${parts[0]}"\n${MENU_MSG}`;
         }
     }
     return twiml(response, from_phone);
@@ -274,5 +304,6 @@ async function process_message(from_phone: string, message: string) {
 
 const sms = {
     process_message,
+    send_invitation,
 };
 export default sms;

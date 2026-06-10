@@ -38,7 +38,7 @@ for ((i=1; i<=WAIT_SECONDS; i++)); do
     systemctl status "$SERVICE" --no-pager || true
     echo
     echo "==> Recent logs"
-    journalctl -u "$SERVICE" -n 100 --no-pager || true
+    journalctl -u "$SERVICE" -n 30 --no-pager || true
     systemctl stop "$SERVICE"
     echo "STOPPED SERVICE -- FIX THE ISSUE!!!"
     exit 1
@@ -48,10 +48,6 @@ done
 
 echo
 echo "✅ $SERVICE stayed up for ${WAIT_SECONDS}s"
-echo
-echo "==> Recent logs"
-journalctl -u "$SERVICE" -n 50 --no-pager
-
 echo
 echo "==> Following logs (Ctrl-C to stop)"
 journalctl -u "$SERVICE" -f

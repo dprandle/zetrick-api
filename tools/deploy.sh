@@ -14,7 +14,7 @@ set -euo pipefail
 APP_DIR="$HOME/zetrick-api"
 SERVICE="zetrick-api"
 BRANCH="master"
-WAIT_SECONDS=20
+WAIT_SECONDS=30
 
 echo "==> Deploying in $APP_DIR"
 cd "$APP_DIR"

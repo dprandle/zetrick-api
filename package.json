@@ -8,6 +8,7 @@
         "dev": "tsx --watch src/server.ts",
         "build": "npm run clean && tsc",
         "start": "npm run build && node dist/server.js",
+        "deploy": "tools/deploy.sh",
         "typecheck": "tsc --noEmit"
     },
     "keywords": [],

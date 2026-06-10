@@ -26,19 +26,21 @@ echo "==> Installing dependencies"
 npm install
 
 echo "==> Restarting $SERVICE"
-sudo systemctl restart "$SERVICE"
+systemctl restart "$SERVICE"
 
 echo "==> Watching $SERVICE for ${WAIT_SECONDS}s..."
 for ((i=1; i<=WAIT_SECONDS; i++)); do
-  if ! sudo systemctl is-active --quiet "$SERVICE"; then
+  if ! systemctl is-active --quiet "$SERVICE"; then
     echo
     echo "❌ Deploy failed: $SERVICE stopped during startup"
     echo
     echo "==> systemctl status"
-    sudo systemctl status "$SERVICE" --no-pager || true
+    systemctl status "$SERVICE" --no-pager || true
     echo
     echo "==> Recent logs"
-    sudo journalctl -u "$SERVICE" -n 100 --no-pager || true
+    journalctl -u "$SERVICE" -n 100 --no-pager || true
+    systemctl stop "$SERVICE"
+    echo "STOPPED SERVICE -- FIX THE ISSUE!!!"
     exit 1
   fi
   sleep 1
@@ -48,9 +50,9 @@ echo
 echo "✅ $SERVICE stayed up for ${WAIT_SECONDS}s"
 echo
 echo "==> Recent logs"
-sudo journalctl -u "$SERVICE" -n 50 --no-pager
+journalctl -u "$SERVICE" -n 50 --no-pager
 
 echo
 echo "==> Following logs (Ctrl-C to stop)"
-sudo journalctl -u "$SERVICE" -f
+journalctl -u "$SERVICE" -f
 EOF

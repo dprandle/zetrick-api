@@ -74,7 +74,7 @@ async function create_sms_invitation(hr: hresource): Promise<invite_result> {
 
     const result = await sms.send_message(
         config.env === "prod" ? hr.phone_number : DEV_PHONE_NUMBER,
-        `Welcome to Zetrick's SMS clock-in system!\n${sms.get_menu_message()}`
+        `Welcome to Zetrick's SMS clock-in system!\n\n${sms.get_menu_message()}`
     );
 
     return {

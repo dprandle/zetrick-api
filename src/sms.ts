@@ -22,12 +22,12 @@ const ACTIVE_CARRIER_ROLES = new Set([...EMPLOYEE_ACTIVE_CARRIER_ROLES, ...SUBC_
 const client = twilio(config.twilio.account_sid, config.twilio.auth_token);
 
 const MENU_MSG = `Commands:
-IN - clock in (single contract)
-IN ${wrap_ltgt("contract")} - clock in to specific contract
-OUT - clock out
-STATUS - current clock status
-CONTRACTS - list your contracts
-MENU - show this list`;
+IN → clock in (single contract)
+IN ${wrap_ltgt("contract")} → clock in to <contract>
+OUT → clock out
+STATUS → current clock status
+CONTRACTS → list your contracts
+MENU → show this list`;
 
 type sms_send_result = {
     sid: string;

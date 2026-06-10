@@ -10,9 +10,14 @@ export const config = {
         db_name: require_env_string("MONGO_DB"),
         time_records: require_env_string("MONGO_TIME_RECORDS"),
         hresources: require_env_string("MONGO_HRESOURCES"),
-        contracts: require_env_string("MONGO_CONTRACTS")
+        contracts: require_env_string("MONGO_CONTRACTS"),
     },
     invitation: {
-        auth_token: require_env_string("INVITATION_AUTH_TOKEN")
-    }
+        auth_token: require_env_string("INVITATION_AUTH_TOKEN"),
+    },
+    twilio: {
+        account_sid: require_env_string("TWILIO_ACCOUNT_SID"),
+        auth_token: require_env_string("TWILIO_AUTH_TOKEN"),
+        message_service_sid: require_env_string("TWILIO_MESSAGE_SERVICE_SID"),
+    },
 };

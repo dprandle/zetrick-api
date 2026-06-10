@@ -51,16 +51,8 @@ async function send_message(number: string, body: string): Promise<sms_send_resu
     }
 }
 
-async function send_invitation(hres_id: string): Promise<sms_send_result> {
-    const hr = await mongo.get_hresources().findOne({ _id: hres_id });
-    if (!hr) throw new Error("Invalid hres id");
-    if (!can_track_time_via_sms(hr.tt_flags, hr.archived_info.on))
-        throw new Error("SMS time tracking is not enabled for hres");
-    const result = await send_message(
-        config.env === "prod" ? hr.phone_number : "+19076874045",
-        `Welcome to Zetrick's SMS clock-in system!\n${MENU_MSG}`
-    );
-    return result;
+function get_menu_message() {
+    return MENU_MSG;
 }
 
 function twiml(message: string, from_phone_for_logging: string): string {
@@ -304,6 +296,7 @@ async function process_message(from_phone: string, message: string) {
 
 const sms = {
     process_message,
-    send_invitation,
+    send_message,
+    get_menu_message,
 };
 export default sms;

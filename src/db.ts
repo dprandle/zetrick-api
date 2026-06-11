@@ -5,7 +5,7 @@ import { time_record, hresource, contract_route } from "./models.js"
 let client: MongoClient;
 
 async function connect(): Promise<void> {
-    client = new MongoClient(config.mongo.uri);
+    client = new MongoClient(config.mongo.uri, {appName: `zetrick-api-${config.env}`});
     await client.connect();
     ilog("Connected to MongoDB");
 }

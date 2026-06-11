@@ -25,7 +25,11 @@ const MENU_MSG = `Commands (case insensitive):
 IN → clock in (single contract)
 IN [contract] → clock in to contract
 OUT → clock out
+OUT [note] → clock out with a note
 STATUS → current clock status
+LAST → summary of your last time record
+ADDNOTE [note] → add note to current/last record
+ADDNOTE LAST [note] → add note to your last clocked-out record
 CONTRACTS → list your contracts
 MENU → show this list`;
 
@@ -137,6 +141,22 @@ function wrap_ltgt(word: string) {
     return "&lt;" + word + "&gt;";
 }
 
+function xml_escape(s: string): string {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Prefix a note with a compact timestamp for provenance. Shows just the time when the note is
+// added on the same (timezone-local) day as the record's clock-in, and prepends MM/DD otherwise
+// (e.g. for an ADDNOTE LAST made the next day).
+function stamp_note(note: string, now: Date, record_start: Date, tz_bytes: number[] | null): string {
+    const time = fmt_time(now, tz_bytes);
+    if (!tz_bytes) return `[${time}] ${note}`;
+    const same_day = day_start(now, tz_bytes).getTime() === day_start(record_start, tz_bytes).getTime();
+    if (same_day) return `[${time}] ${note}`;
+    const date_str = now.toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", timeZone: tz_str(tz_bytes) });
+    return `[${date_str} ${time}] ${note}`;
+}
+
 function get_best_route_str(c: contract_route) {
     return c.route_num || get_current_route_name(c);
 }
@@ -165,6 +185,33 @@ async function find_qualified_hres(phone: string): Promise<hresource | string> {
 
 async function find_active_time_entry(hrid: string, time_coll: Collection<time_record>): Promise<time_record | null> {
     return time_coll.findOne({ hrid, end: INVALID_DATETIME });
+}
+
+async function find_most_recent_completed(
+    hrid: string,
+    time_coll: Collection<time_record>,
+    end_cutoff?: Date
+): Promise<time_record | null> {
+    const end_filter: Record<string, Date> = { $ne: INVALID_DATETIME };
+    if (end_cutoff) end_filter.$gte = end_cutoff;
+    return time_coll.find({ hrid, end: end_filter }).sort({ end: -1 }).limit(1).next();
+}
+
+function fmt_completed(rec: time_record, contract: contract_route | null): string {
+    const code = contract ? get_best_route_str(contract) : rec.cont_id;
+    const tz = contract?.timezone ?? null;
+    let msg = `Clocked out of ${code} at ${fmt_time(rec.end, tz)} - clocked in at ${fmt_since(rec.start, rec.end, tz)}. Total: ${fmt_duration(rec.start, rec.end)}.`;
+    if (rec.notes) msg += `\n${xml_escape(rec.notes)}`;
+    return msg;
+}
+
+function fmt_status(rec: time_record, contract: contract_route | null): string {
+    const code = contract ? get_best_route_str(contract) : rec.cont_id;
+    const tz = contract?.timezone ?? null;
+    const now = new Date();
+    let msg = `Clocked in to ${code} since ${fmt_since(rec.start, now, tz)} (${fmt_duration(rec.start, now)} elapsed).`;
+    if (rec.notes) msg += `\n${xml_escape(rec.notes)}`;
+    return msg;
 }
 
 async function handle_clock_in(hres: hresource, contract_code: string | null): Promise<string> {
@@ -226,27 +273,77 @@ async function handle_clock_in(hres: hresource, contract_code: string | null): P
     return `Clock in failed - server error`;
 }
 
-async function handle_clock_out(hres: hresource): Promise<string> {
+async function handle_clock_out(hres: hresource, note: string): Promise<string> {
     const time_coll = mongo.get_trecs();
     const active = await find_active_time_entry(hres._id, time_coll);
     if (!active) {
         return "You're not currently clocked in. To clock in reply IN";
     }
     const contract_coll = mongo.get_conts();
+    const contract = await contract_coll.findOne({ _id: active.cont_id });
     const now = new Date();
     const change_now = { by: { source_str: hres._id }, on: now };
 
-    const updated_result = await time_coll.updateOne(
-        { _id: active._id },
-        { $set: { end: now, last_update: change_now } }
-    );
+    const set_fields: { end: Date; last_update: typeof change_now; notes?: string } = {
+        end: now,
+        last_update: change_now,
+    };
+    let new_notes = active.notes;
+    if (note) {
+        const stamped = stamp_note(note, now, active.start, contract?.timezone ?? null);
+        new_notes = active.notes ? `${active.notes}\n${stamped}` : stamped;
+        set_fields.notes = new_notes;
+    }
+
+    const updated_result = await time_coll.updateOne({ _id: active._id }, { $set: set_fields });
     if (updated_result.acknowledged && updated_result.matchedCount == updated_result.modifiedCount) {
-        const contract = await contract_coll.findOne({ _id: active.cont_id });
-        const code = contract ? get_best_route_str(contract) : active.cont_id;
         ilog(`Updated timesheet ${active._id} for ${hres._id} (end: ${format_date_for_log(now)})`);
-        return `Clocked out of ${code} at ${fmt_time(now, contract?.timezone ?? null)}. Total: ${fmt_duration(active.start, now)}.`;
+        active.end = now;
+        active.notes = new_notes;
+        return fmt_completed(active, contract);
     }
     return "Server error - contact your admin";
+}
+
+async function handle_last(hres: hresource): Promise<string> {
+    const time_coll = mongo.get_trecs();
+    const rec = await find_most_recent_completed(hres._id, time_coll);
+    if (!rec) {
+        return "No previous time records found - to clock in send IN";
+    }
+    const contract = await mongo.get_conts().findOne({ _id: rec.cont_id });
+    return fmt_completed(rec, contract);
+}
+
+async function handle_add_note(hres: hresource, note: string, ignore_active: boolean): Promise<string> {
+    if (!note) {
+        return "Provide a note, e.g. ADDNOTE finished early";
+    }
+    const time_coll = mongo.get_trecs();
+    let target: time_record | null = null;
+    let clocked_in = false;
+    if (!ignore_active) {
+        const active = await find_active_time_entry(hres._id, time_coll);
+        if (active) {
+            target = active;
+            clocked_in = true;
+        }
+    }
+    if (!target) {
+        const cutoff = new Date(Date.now() - 2 * 86400000);
+        target = await find_most_recent_completed(hres._id, time_coll, cutoff);
+    }
+    if (!target) {
+        return "No recent time record (last 2 days) to add a note to.";
+    }
+    const contract = await mongo.get_conts().findOne({ _id: target.cont_id });
+    const now = new Date();
+    const stamped = stamp_note(note, now, target.start, contract?.timezone ?? null);
+    const new_notes = target.notes ? `${target.notes}\n${stamped}` : stamped;
+    const change_now = { by: { source_str: hres._id }, on: now };
+    await time_coll.updateOne({ _id: target._id }, { $set: { notes: new_notes, last_update: change_now } });
+    target.notes = new_notes;
+    return clocked_in ? fmt_status(target, contract) : fmt_completed(target, contract);
 }
 
 async function handle_clock_status(hres: hresource): Promise<string> {
@@ -256,10 +353,7 @@ async function handle_clock_status(hres: hresource): Promise<string> {
     }
     const contract_coll = mongo.get_conts();
     const contract = await contract_coll.findOne({ _id: active.cont_id });
-    const code = contract ? get_best_route_str(contract) : active.cont_id;
-    const now = new Date();
-    const since = fmt_since(active.start, now, contract?.timezone ?? null);
-    return `Clocked in to ${code} since ${since} (${fmt_duration(active.start, now)} elapsed).`;
+    return fmt_status(active, contract);
 }
 
 async function handle_contracts(hres: hresource): Promise<string> {
@@ -278,31 +372,46 @@ async function process_message(from_phone: string, message: string) {
     const hres: hresource = qual_result;
     ilog(`Matched ${from_phone} to ${hres.first_name} ${hres.last_name} (${hres._id})`);
 
-    const cleaned = message.replace(/[^a-zA-Z0-9\s]/g, "").trim();
-    const parts = cleaned.split(/\s+/);
-    let response: string = `Unsupported message format. Please send a commands in following format:\n\n${MENU_MSG}`;
-    if (parts.length <= 2) {
-        const keyword = parts[0]?.toUpperCase() ?? null;
-        const arg = parts[1] ?? null;
-        switch (keyword) {
-            case "IN":
-                response = await handle_clock_in(hres, arg);
-                break;
-            case "OUT":
-                response = await handle_clock_out(hres);
-                break;
-            case "STATUS":
-                response = await handle_clock_status(hres);
-                break;
-            case "CONTRACTS":
-                response = await handle_contracts(hres);
-                break;
-            case "MENU":
-                response = MENU_MSG;
-                break;
-            default:
-                response = `Unknown command "${parts[0]}"\n${MENU_MSG}`;
+    // QString::simplified equivalent: trim ends and collapse internal whitespace runs to a
+    // single space, while preserving punctuation so free-text notes keep their characters.
+    const simplified = message.trim().replace(/\s+/g, " ");
+    const tokens = simplified.length ? simplified.split(" ") : [];
+    const keyword = (tokens[0] ?? "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+    let response: string;
+    switch (keyword) {
+        case "IN":
+            if (tokens.length > 2) {
+                response = `Unsupported message format. Please send a commands in following format:\n\n${MENU_MSG}`;
+            } else {
+                const contract = tokens[1] ? tokens[1].replace(/[^a-zA-Z0-9]/g, "") : null;
+                response = await handle_clock_in(hres, contract);
+            }
+            break;
+        case "OUT":
+            response = await handle_clock_out(hres, tokens.slice(1).join(" "));
+            break;
+        case "STATUS":
+            response = await handle_clock_status(hres);
+            break;
+        case "LAST":
+            response = await handle_last(hres);
+            break;
+        case "ADDNOTE": {
+            const sub = (tokens[1] ?? "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+            response =
+                sub === "LAST"
+                    ? await handle_add_note(hres, tokens.slice(2).join(" "), true)
+                    : await handle_add_note(hres, tokens.slice(1).join(" "), false);
+            break;
         }
+        case "CONTRACTS":
+            response = await handle_contracts(hres);
+            break;
+        case "MENU":
+            response = MENU_MSG;
+            break;
+        default:
+            response = `Unknown command "${tokens[0] ?? ""}"\n${MENU_MSG}`;
     }
     return twiml(response, from_phone);
 }

@@ -5,34 +5,12 @@ import { config } from "./config.js";
 
 const DEV_PHONE_NUMBER = "+19076874045";
 
-const CONTACT_METHODS = ["sms", "email"] as const;
-type contact_method = (typeof CONTACT_METHODS)[number];
+const TT_CONTACT_METHODS = ["sms", "email"] as const;
+export type tt_contact_method = (typeof TT_CONTACT_METHODS)[number];
 
 const TT_SELECTIONS = ["qbt", "sms"] as const;
-type tt_selection = (typeof TT_SELECTIONS)[number];
+export type tt_selection = (typeof TT_SELECTIONS)[number];
 
-export type invite_request_body = {
-    hres_id: string;
-    contact_method: contact_method;
-    type: tt_selection;
-};
-
-// Fastify validates the body against this before our handler runs, so the
-// handler can trust hres_id is a non-empty string and contact_method is valid.
-const invite_request_body_schema = {
-    type: "object",
-    required: ["hres_id", "contact_method", "type"],
-    additionalProperties: false,
-    properties: {
-        hres_id: { type: "string", minLength: 1 },
-        contact_method: { type: "string", enum: CONTACT_METHODS },
-        type: { type: "string", enum: TT_SELECTIONS },
-    },
-} as const;
-
-type qbt_invite_response = {
-    message: string;
-};
 
 export type invite_result = {
     ok: boolean;
@@ -40,9 +18,9 @@ export type invite_result = {
     status: number;
 };
 
-function get_invite_request_body_schema() {
-    return invite_request_body_schema;
-}
+type qbt_invite_response = {
+    message: string;
+};
 
 async function create_qbt_invite(contact_method: string, hr: hresource): Promise<invite_result> {
     if (!can_track_time_via_qbt(hr.tt_flags, hr.archived_info.on)) {
@@ -108,7 +86,8 @@ async function process_invitation(
 
 const inv = {
     process_invitation,
-    get_invite_request_body_schema,
+    TT_CONTACT_METHODS,
+    TT_SELECTIONS
 };
 
 export default inv;

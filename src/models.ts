@@ -45,6 +45,21 @@ export interface employment_date_info {
 export const TIME_TRACKING_APP = 1;
 export const TIME_TRACKING_SMS = 2;
 
+// Employee role keys whose linked hresources should receive a jobcode assignment.
+export const EMP_ACTIVE_ROLE_KEYS = new Set(["A_Main_Carrier[021422170000UTC]", "B_Sub_Carrier[021422170000UTC]"]);
+const SUBC_ACTIVE_CARRIER_ROLES = new Set(["A_SC_Main_Carrier[021422170000UTC]", "B_SC_Sub_Carrier[021422170000UTC]"]);
+const ACTIVE_CARRIER_ROLES = new Set([...EMP_ACTIVE_ROLE_KEYS, ...SUBC_ACTIVE_CARRIER_ROLES]);
+
+const EMP_ROLE_KEYS = new Set([...EMP_ACTIVE_ROLE_KEYS, "C_Previous_Carrier[021422170000UTC]"]);
+
+// Broader set of roles that mark an hresource as an employee or manager (vs. a subcontractor).
+export const EMP_MGR_ROLE_KEYS = new Set([
+    ...EMP_ROLE_KEYS,
+    "B_West_Manager[021422170000UTC]",
+    "C_South_Manager[021422170000UTC]",
+    "D_East_Manager[021422170000UTC]",
+]);
+
 export interface hresource extends uobj_common {
     first_name: string;
     last_name: string;
@@ -123,4 +138,16 @@ export function can_track_time_via_sms(tt_flags: number, archived_on: Date): boo
 
 export function can_track_time_via_qbt(tt_flags: number, archived_on: Date): boolean {
     return can_track_time(tt_flags, archived_on, TIME_TRACKING_APP);
+}
+
+export function is_employee(hres: hresource): boolean {
+    return hres.allowed_roles.some((r) => EMP_ROLE_KEYS.has(r.source_str));
+}
+
+export function is_employee_or_mgr(hres: hresource): boolean {
+    return hres.allowed_roles.some((r) => EMP_MGR_ROLE_KEYS.has(r.source_str));
+}
+
+export function get_active_allowed_roles(hres: hresource) {
+    return hres.allowed_roles.filter((r) => ACTIVE_CARRIER_ROLES.has(r.source_str));
 }

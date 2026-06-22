@@ -11,27 +11,29 @@ import {
     TIME_RECORD_SCHEMA_VERSION,
     can_track_time_via_sms,
     get_current_route_name,
+    get_active_allowed_roles,
+    is_employee,
 } from "./models.js";
 
 const INVALID_DATETIME = new Date(-62135596800000);
 
-const EMPLOYEE_ACTIVE_CARRIER_ROLES = new Set(["A_Main_Carrier[021422170000UTC]", "B_Sub_Carrier[021422170000UTC]"]);
-const SUBC_ACTIVE_CARRIER_ROLES = new Set(["A_SC_Main_Carrier[021422170000UTC]", "B_SC_Sub_Carrier[021422170000UTC]"]);
-const ACTIVE_CARRIER_ROLES = new Set([...EMPLOYEE_ACTIVE_CARRIER_ROLES, ...SUBC_ACTIVE_CARRIER_ROLES]);
-
 const client = twilio(config.twilio.account_sid, config.twilio.auth_token);
 
 const MENU_MSG = `Commands (case insensitive):
-IN → clock in (single contract)
-IN [contract] → clock in to contract
+IN → clock in
 OUT → clock out
-OUT [note] → clock out with a note
-STATUS → current clock status
-LAST → summary of your last time record
-ADDNOTE [note] → add note to current/last record
-ADDNOTE LAST [note] → add note to your last clocked-out record
+STATUS → your current clock status
+LAST → summary of your last time entry
+MENU → show this list
+
+If you work more than one contract:
 CONTRACTS → list your contracts
-MENU → show this list`;
+IN contract_name → clock in to contract_name
+
+Adding notes:
+OUT your_note_here → clock out with a note added to the time entry
+ADDNOTE your_note_here → add a note to your current time entry if clocked in, or to your last time entry if clocked out
+ADDNOTE LAST your_note_here → add a note to your last clocked-out time entry`;
 
 type sms_send_result = {
     sid: string;
@@ -55,8 +57,8 @@ async function send_message(number: string, body: string): Promise<sms_send_resu
     }
 }
 
-function get_menu_message() {
-    return MENU_MSG;
+function get_menu_message(is_employee: boolean) {
+    return !is_employee ? MENU_MSG : MENU_MSG.replaceAll("contract", "route").replaceAll("CONTRACT", "ROUTE");
 }
 
 function twiml(message: string, from_phone_for_logging: string): string {
@@ -137,10 +139,6 @@ function format_date_for_log(dt: Date): string {
     return formatted;
 }
 
-function wrap_ltgt(word: string) {
-    return "&lt;" + word + "&gt;";
-}
-
 function xml_escape(s: string): string {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
@@ -163,7 +161,7 @@ function get_best_route_str(c: contract_route) {
 
 async function find_user_contracts(hr: hresource, contracts: Collection<contract_route>): Promise<contract_route[]> {
     // Narrow hr allowed roles to only active ones
-    const active_allowed_roles = hr.allowed_roles.filter((r) => ACTIVE_CARRIER_ROLES.has(r.source_str));
+    const active_allowed_roles = get_active_allowed_roles(hr);
     // Create our filter from the narrowed roles
     const role_filter_objs = active_allowed_roles.map((r) => {
         return { [`assignments.${r.source_str}.emp_id`]: hr._id };
@@ -377,11 +375,12 @@ async function process_message(from_phone: string, message: string) {
     const simplified = message.trim().replace(/\s+/g, " ");
     const tokens = simplified.length ? simplified.split(" ") : [];
     const keyword = (tokens[0] ?? "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+    const menu_message = get_menu_message(is_employee(hres));
     let response: string;
     switch (keyword) {
         case "IN":
             if (tokens.length > 2) {
-                response = `Unsupported message format. Please send a commands in following format:\n\n${MENU_MSG}`;
+                response = `Unsupported message format. Please send a commands in following format:\n\n${menu_message}`;
             } else {
                 const contract = tokens[1] ? tokens[1].replace(/[^a-zA-Z0-9]/g, "") : null;
                 response = await handle_clock_in(hres, contract);
@@ -408,10 +407,10 @@ async function process_message(from_phone: string, message: string) {
             response = await handle_contracts(hres);
             break;
         case "MENU":
-            response = MENU_MSG;
+            response = menu_message;
             break;
         default:
-            response = `Unknown command "${tokens[0] ?? ""}"\n${MENU_MSG}`;
+            response = `Unknown command "${tokens[0] ?? ""}"\n${menu_message}`;
     }
     return twiml(response, from_phone);
 }

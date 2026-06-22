@@ -1,6 +1,6 @@
 import mongo from "./db.js";
 import sms from "./sms.js";
-import { can_track_time_via_qbt, can_track_time_via_sms, hresource } from "./models.js";
+import { can_track_time_via_qbt, can_track_time_via_sms, hresource, is_employee } from "./models.js";
 import { config } from "./config.js";
 
 const DEV_PHONE_NUMBER = "+19076874045";
@@ -52,7 +52,7 @@ async function create_sms_invitation(hr: hresource): Promise<invite_result> {
 
     const result = await sms.send_message(
         config.env === "prod" ? hr.phone_number : DEV_PHONE_NUMBER,
-        `Welcome to Zetrick's SMS clock-in system!\n\n${sms.get_menu_message()}`
+        `Welcome to Zetrick's SMS clock-in system!\n\n${sms.get_menu_message(is_employee(hr))}`
     );
 
     return {

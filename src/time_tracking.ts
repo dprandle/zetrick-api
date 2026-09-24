@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyPluginAsync, FastifyRequest, FastifyReply, FastifySchema } from "fastify";
+import type { FastifyInstance, FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import sms from "./sms.js";
 import inv, { tt_contact_method, tt_selection } from "./invitation.js";
 import { config } from "./config.js";

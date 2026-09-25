@@ -13,7 +13,7 @@ async function start_server() {
     await mongo.connect();
     app.register(formbody);
     app.register(create_time_tracking_routes());
-    app.register(create_quickbooks_routes());
+    app.register(await create_quickbooks_routes());
 
     try {
         await app.listen({ port: port });

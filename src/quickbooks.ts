@@ -1,6 +1,58 @@
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
 import { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 
-async function handle_quickbooks_launch(_request: FastifyRequest, reply: FastifyReply) {
+const QUICKBOOKS_REDIRECT_URI = "https://api.zetrick.com/quickbooks/callback";
+const QUICKBOOKS_SCOPE = "com.intuit.quickbooks.accounting";
+const QUICKBOOKS_AUTH_URL = "https://appcenter.intuit.com/connect/oauth2";
+const QUICKBOOKS_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
+const QUICKBOOKS_CONNECTION_FILE = "/var/lib/zetrick/quickbooks.json";
+
+/*
+ * OAuth state is intentionally short-lived and single-use.
+ *
+ * This is acceptable for a single-process server. If you run
+ * multiple processes/instances, move this to MongoDB or Redis.
+ */
+const oauth_states = new Map<string, number>();
+
+interface quickbooks_callback_query {
+    code?: string;
+    state?: string;
+    realmId?: string;
+
+    error?: string;
+    error_description?: string;
+}
+
+interface quickbooks_token_response {
+    access_token: string;
+    refresh_token: string;
+
+    expires_in: number;
+    x_refresh_token_expires_in: number;
+
+    token_type: string;
+}
+
+export interface quickbooks_connection {
+    realm_id: string;
+
+    access_token: string;
+    refresh_token: string;
+
+    access_token_expires_at: Date;
+    refresh_token_expires_at: Date;
+
+    connected_at: Date;
+}
+
+/*
+ * Intuit Launch URL
+ *
+ * https://api.zetrick.com/quickbooks
+ */
+async function handle_quickbooks_launch(request: FastifyRequest, reply: FastifyReply) {
     return reply.type("text/html; charset=utf-8").send(
         html_page(
             "Zetrick QuickBooks Integration",
@@ -8,23 +60,23 @@ async function handle_quickbooks_launch(_request: FastifyRequest, reply: Fastify
                     <h1>Zetrick QuickBooks Integration</h1>
 
                     <p>
-                        This application is an internal business
-                        application operated by Zetrick LLC.
+                        This application integrates Zetrick LLC's
+                        internal business systems with QuickBooks
+                        Online.
                     </p>
 
                     <p>
-                        The application integrates Zetrick's internal
-                        business systems with QuickBooks Online for
-                        accounting and related business operations.
+                        <a class="button"
+                           href="/quickbooks/connect">
+                            Connect QuickBooks
+                        </a>
                     </p>
 
                     <p>
                         <a href="/quickbooks/privacy">
                             Privacy Policy
                         </a>
-                    </p>
-
-                    <p>
+                        &nbsp;&middot;&nbsp;
                         <a href="/quickbooks/terms">
                             Terms of Use
                         </a>
@@ -34,39 +86,249 @@ async function handle_quickbooks_launch(_request: FastifyRequest, reply: Fastify
     );
 }
 
+/*
+ * Intuit Connect/Reconnect URL
+ *
+ * https://api.zetrick.com/quickbooks/connect
+ *
+ * Starts OAuth.
+ */
 async function handle_quickbooks_connect(request: FastifyRequest, reply: FastifyReply) {
+    const client_id = process.env.QUICKBOOKS_CLIENT_ID;
+
+    if (!client_id) {
+        request.log.error("QUICKBOOKS_CLIENT_ID is not configured");
+
+        return reply
+            .code(500)
+            .type("text/html; charset=utf-8")
+            .send(error_page("QuickBooks Configuration Error", "The QuickBooks integration is not configured."));
+    }
+
+    /*
+     * Generate a cryptographically random CSRF token.
+     */
+    const state = crypto.randomBytes(32).toString("base64url");
+
+    /*
+     * State is valid for ten minutes.
+     */
+    oauth_states.set(state, Date.now() + 10 * 60 * 1000);
+
+    cleanup_oauth_states();
+
+    const params = new URLSearchParams({
+        client_id,
+        response_type: "code",
+        scope: QUICKBOOKS_SCOPE,
+        redirect_uri: QUICKBOOKS_REDIRECT_URI,
+        state,
+    });
+
+    return reply.redirect(`${QUICKBOOKS_AUTH_URL}?${params.toString()}`);
+}
+
+/*
+ * OAuth redirect URI
+ *
+ * https://api.zetrick.com/quickbooks/callback
+ */
+async function handle_quickbooks_callback(
+    request: FastifyRequest<{
+        Querystring: quickbooks_callback_query;
+    }>,
+    reply: FastifyReply
+) {
+    const { code, state, realmId, error, error_description } = request.query;
+
+    /*
+     * The user may have denied authorization, or Intuit
+     * may have returned another OAuth error.
+     */
+    if (error) {
+        request.log.warn(
+            {
+                error,
+                error_description,
+            },
+            "QuickBooks OAuth authorization failed"
+        );
+
+        return reply
+            .code(400)
+            .type("text/html; charset=utf-8")
+            .send(
+                error_page(
+                    "QuickBooks Authorization Failed",
+                    error_description ?? "QuickBooks authorization was not completed."
+                )
+            );
+    }
+
+    /*
+     * All three are required for a successful callback.
+     */
+    if (!code || !state || !realmId) {
+        request.log.warn("Incomplete QuickBooks OAuth callback");
+
+        return reply
+            .code(400)
+            .type("text/html; charset=utf-8")
+            .send(
+                error_page(
+                    "Invalid Authorization Response",
+                    "The authorization response from QuickBooks was incomplete."
+                )
+            );
+    }
+
+    /*
+     * Validate CSRF state.
+     *
+     * consume_oauth_state() deletes it whether valid or
+     * expired so that state values cannot be replayed.
+     */
+    if (!consume_oauth_state(state)) {
+        request.log.warn("Rejected QuickBooks OAuth callback due to invalid state");
+
+        return reply
+            .code(400)
+            .type("text/html; charset=utf-8")
+            .send(
+                error_page(
+                    "Authorization Validation Failed",
+                    "The authorization request could not be verified. Please reconnect QuickBooks."
+                )
+            );
+    }
+
+    const client_id = process.env.QUICKBOOKS_CLIENT_ID;
+
+    const client_secret = process.env.QUICKBOOKS_CLIENT_SECRET;
+
+    if (!client_id || !client_secret) {
+        request.log.error("QuickBooks OAuth credentials are not configured");
+
+        return reply
+            .code(500)
+            .type("text/html; charset=utf-8")
+            .send(error_page("QuickBooks Configuration Error", "The QuickBooks integration is not configured."));
+    }
+
+    /*
+     * Exchange the short-lived authorization code for
+     * access + refresh tokens.
+     */
+    const basic_auth = Buffer.from(`${client_id}:${client_secret}`).toString("base64");
+
+    let token_response: Response;
+
+    try {
+        token_response = await fetch(QUICKBOOKS_TOKEN_URL, {
+            method: "POST",
+
+            headers: {
+                Authorization: `Basic ${basic_auth}`,
+
+                Accept: "application/json",
+
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+
+            body: new URLSearchParams({
+                grant_type: "authorization_code",
+
+                code,
+
+                redirect_uri: QUICKBOOKS_REDIRECT_URI,
+            }),
+        });
+    } catch (err) {
+        request.log.error({ err }, "Unable to contact QuickBooks OAuth server");
+
+        return reply
+            .code(502)
+            .type("text/html; charset=utf-8")
+            .send(
+                error_page("QuickBooks Connection Failed", "Unable to communicate with QuickBooks. Please try again.")
+            );
+    }
+
+    if (!token_response.ok) {
+        /*
+         * Don't log the authorization code or credentials.
+         */
+        const response_body = await token_response.text();
+
+        request.log.error(
+            {
+                status: token_response.status,
+                response_body,
+            },
+            "QuickBooks token exchange failed"
+        );
+
+        return reply
+            .code(502)
+            .type("text/html; charset=utf-8")
+            .send(
+                error_page(
+                    "QuickBooks Connection Failed",
+                    "QuickBooks could not complete the authorization. Please try connecting again."
+                )
+            );
+    }
+
+    const tokens = (await token_response.json()) as quickbooks_token_response;
+
+    /*
+     * Persist this.
+     *
+     * Replace this function with your MongoDB
+     * implementation.
+     */
+    await save_quickbooks_connection({
+        realm_id: realmId,
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        access_token_expires_at: new Date(Date.now() + tokens.expires_in * 1000),
+        refresh_token_expires_at: new Date(Date.now() + tokens.x_refresh_token_expires_in * 1000),
+        connected_at: new Date(),
+    });
+
+    request.log.info(
+        {
+            realm_id: realmId,
+        },
+        "QuickBooks connected successfully"
+    );
+
     return reply.type("text/html; charset=utf-8").send(
         html_page(
-            "Connect QuickBooks",
+            "QuickBooks Connected",
             `
-                    <h1>Connect QuickBooks</h1>
+                    <h1>QuickBooks Connected</h1>
 
                     <p>
-                        This page is used to initiate the connection
-                        between Zetrick's internal business systems
-                        and QuickBooks Online.
+                        Zetrick's QuickBooks Online
+                        integration was successfully
+                        authorized.
+                    </p>
+
+                    <p>
+                        You may close this window.
                     </p>
                 `
         )
     );
 }
 
-async function handle_quickbooks_callback(request: FastifyRequest, reply: FastifyReply) {
-    return reply.type("text/html; charset=utf-8").send(
-        html_page(
-            "QuickBooks Connection",
-            `
-                    <h1>QuickBooks Connection</h1>
-
-                    <p>
-                        This page handles authorization responses
-                        from QuickBooks Online.
-                    </p>
-                `
-        )
-    );
-}
-
+/*
+ * Intuit Disconnect URL
+ *
+ * Note that this is the page the browser is sent to
+ * when disconnecting. It is not itself a webhook.
+ */
 async function handle_quickbooks_disconnected(request: FastifyRequest, reply: FastifyReply) {
     return reply.type("text/html; charset=utf-8").send(
         html_page(
@@ -75,8 +337,15 @@ async function handle_quickbooks_disconnected(request: FastifyRequest, reply: Fa
                     <h1>QuickBooks Disconnected</h1>
 
                     <p>
-                        The Zetrick QuickBooks Online integration
-                        has been disconnected.
+                        The Zetrick QuickBooks Online
+                        integration has been disconnected.
+                    </p>
+
+                    <p>
+                        <a class="button"
+                           href="/quickbooks/connect">
+                            Reconnect QuickBooks
+                        </a>
                     </p>
                 `
         )
@@ -86,7 +355,7 @@ async function handle_quickbooks_disconnected(request: FastifyRequest, reply: Fa
 async function handle_quickbooks_terms(request: FastifyRequest, reply: FastifyReply) {
     return reply.type("text/html; charset=utf-8").send(
         html_page(
-            "Zetrick QuickBooks Integration - Terms of Use",
+            "Terms of Use",
             `
                     <h1>Terms of Use</h1>
 
@@ -96,60 +365,45 @@ async function handle_quickbooks_terms(request: FastifyRequest, reply: FastifyRe
                     </p>
 
                     <p>
-                        These Terms of Use apply to the Zetrick
-                        QuickBooks Integration ("Application"), an
-                        internal software application operated by
-                        Zetrick LLC ("Zetrick").
+                        These Terms of Use apply to the
+                        Zetrick QuickBooks Integration
+                        ("Application"), an internal software
+                        application operated by Zetrick LLC
+                        ("Zetrick").
                     </p>
 
                     <h2>Purpose</h2>
 
                     <p>
-                        The Application is intended for authorized
-                        internal use by Zetrick and its authorized
-                        personnel. The Application integrates
-                        Zetrick's internal business systems with
-                        QuickBooks Online for accounting and related
-                        business operations.
+                        The Application integrates Zetrick's
+                        internal business systems with
+                        QuickBooks Online for accounting and
+                        related business operations.
                     </p>
 
                     <h2>Authorized Use</h2>
 
                     <p>
-                        Access to the Application is limited to
-                        individuals authorized by Zetrick. Users may
-                        not access or use the Application for any
-                        unauthorized, unlawful, or fraudulent
-                        purpose.
+                        Access to the Application is limited
+                        to individuals authorized by Zetrick.
                     </p>
 
                     <h2>QuickBooks Integration</h2>
 
                     <p>
-                        The Application may access QuickBooks Online
-                        data after appropriate authorization through
-                        Intuit's authentication services. Access to
-                        QuickBooks Online is subject to Intuit's
-                        applicable terms and policies.
+                        The Application may access QuickBooks
+                        Online data after authorization
+                        through Intuit's authentication
+                        services.
                     </p>
 
                     <h2>Data</h2>
 
                     <p>
                         The Application may process business,
-                        accounting, vendor, contractor, transaction,
-                        and related information necessary to provide
-                        its functionality. Information is handled in
-                        accordance with Zetrick's Privacy Policy.
-                    </p>
-
-                    <h2>Availability</h2>
-
-                    <p>
-                        The Application is provided for Zetrick's
-                        internal business purposes. Zetrick does not
-                        guarantee uninterrupted or error-free
-                        operation of the Application.
+                        accounting, vendor, contractor,
+                        transaction, and related information
+                        necessary to provide its functionality.
                     </p>
 
                     <h2>Third-Party Services</h2>
@@ -157,23 +411,13 @@ async function handle_quickbooks_terms(request: FastifyRequest, reply: FastifyRe
                     <p>
                         The Application relies on third-party
                         services, including QuickBooks Online.
-                        Zetrick is not responsible for the
-                        availability, operation, or policies of
-                        third-party services.
-                    </p>
-
-                    <h2>Changes</h2>
-
-                    <p>
-                        Zetrick may modify these Terms of Use or the
-                        Application at any time.
                     </p>
 
                     <h2>Contact</h2>
 
                     <p>
-                        Questions regarding these Terms of Use may
-                        be directed to Zetrick LLC.
+                        Questions regarding these Terms of Use
+                        may be directed to Zetrick LLC.
                     </p>
                 `
         )
@@ -183,7 +427,7 @@ async function handle_quickbooks_terms(request: FastifyRequest, reply: FastifyRe
 async function handle_quickbooks_privacy(request: FastifyRequest, reply: FastifyReply) {
     return reply.type("text/html; charset=utf-8").send(
         html_page(
-            "Zetrick QuickBooks Integration - Privacy Policy",
+            "Privacy Policy",
             `
                     <h1>Privacy Policy</h1>
 
@@ -193,174 +437,181 @@ async function handle_quickbooks_privacy(request: FastifyRequest, reply: Fastify
                     </p>
 
                     <p>
-                        This Privacy Policy describes how Zetrick LLC
-                        ("Zetrick") handles information through the
-                        Zetrick QuickBooks Integration
-                        ("Application"). The Application is an
-                        internal business application used by
-                        Zetrick to integrate its business systems
-                        with QuickBooks Online.
+                        This Privacy Policy describes how
+                        Zetrick LLC ("Zetrick") handles
+                        information through the Zetrick
+                        QuickBooks Integration
+                        ("Application").
                     </p>
 
                     <h2>Information We Access</h2>
 
                     <p>
-                        When the Application is connected to
-                        QuickBooks Online, it may access information
-                        authorized through the QuickBooks connection,
-                        including:
+                        The Application may access information
+                        authorized through the QuickBooks
+                        connection, including:
                     </p>
 
                     <ul>
                         <li>
-                            Vendor and contractor information;
+                            Vendor and contractor information
                         </li>
+
                         <li>
-                            Accounting and financial transaction
-                            information;
+                            Accounting and financial
+                            transaction information
                         </li>
+
                         <li>
-                            Expense and payment records;
+                            Expense and payment records
                         </li>
+
                         <li>
-                            Account and category information; and
-                        </li>
-                        <li>
-                            Other QuickBooks Online information
-                            necessary to provide the Application's
-                            functionality.
+                            Account and category information
                         </li>
                     </ul>
 
                     <p>
-                        The Application may also create or update
-                        information in QuickBooks Online as part of
-                        Zetrick's business and accounting processes.
+                        The Application may create or update
+                        information in QuickBooks Online as
+                        part of Zetrick's business and
+                        accounting processes.
                     </p>
 
                     <h2>How Information Is Used</h2>
 
                     <p>
-                        Information accessed through the Application
-                        is used solely for Zetrick's legitimate
-                        internal business purposes, including:
+                        Information is used for Zetrick's
+                        internal business purposes, including
+                        synchronizing business records,
+                        managing vendors and contractors,
+                        recording expenses and payments, and
+                        supporting accounting operations.
                     </p>
-
-                    <ul>
-                        <li>
-                            Synchronizing business records with
-                            QuickBooks Online;
-                        </li>
-                        <li>
-                            Managing vendor and contractor records;
-                        </li>
-                        <li>
-                            Recording expenses and payments;
-                        </li>
-                        <li>
-                            Reconciling business and accounting
-                            records; and
-                        </li>
-                        <li>
-                            Supporting Zetrick's accounting and
-                            financial operations.
-                        </li>
-                    </ul>
 
                     <h2>Information Sharing</h2>
 
                     <p>
-                        Information obtained through the QuickBooks
-                        integration is not sold or rented.
-                    </p>
-
-                    <p>
-                        Information may be disclosed to service
-                        providers when necessary to operate
-                        Zetrick's systems, comply with legal
-                        obligations, protect Zetrick's rights, or
-                        provide the functionality of the
-                        Application.
+                        Information obtained through the
+                        QuickBooks integration is not sold or
+                        rented.
                     </p>
 
                     <h2>Data Security</h2>
 
                     <p>
-                        Zetrick uses reasonable administrative,
-                        technical, and organizational safeguards
-                        designed to protect information processed by
-                        the Application against unauthorized access,
-                        disclosure, alteration, or destruction.
-                    </p>
-
-                    <p>
-                        Access to the Application and its QuickBooks
-                        integration is restricted to authorized
-                        users and systems.
+                        Zetrick uses reasonable
+                        administrative, technical, and
+                        organizational safeguards designed
+                        to protect information processed by
+                        the Application.
                     </p>
 
                     <h2>QuickBooks Authorization</h2>
 
                     <p>
-                        Access to QuickBooks Online is authorized
-                        through Intuit's authentication and
-                        authorization services. The Application does
-                        not require users to provide their
-                        QuickBooks passwords to Zetrick.
-                    </p>
-
-                    <p>
-                        Authorization to access QuickBooks Online may
-                        be revoked through QuickBooks or Intuit's
-                        applicable account and application-management
-                        functionality.
+                        Access to QuickBooks Online is
+                        authorized through Intuit's
+                        authentication and authorization
+                        services. The Application does not
+                        require users to provide their
+                        QuickBooks password to Zetrick.
                     </p>
 
                     <h2>Data Retention</h2>
 
                     <p>
-                        Information is retained only as reasonably
-                        necessary for Zetrick's business,
-                        accounting, legal, compliance, and
-                        operational purposes.
-                    </p>
-
-                    <p>
-                        Information obtained from QuickBooks may also
-                        exist independently in QuickBooks Online and
-                        is subject to Intuit's applicable policies
-                        and retention practices.
+                        Information is retained only as
+                        reasonably necessary for Zetrick's
+                        business, accounting, legal,
+                        compliance, and operational purposes.
                     </p>
 
                     <h2>Third-Party Services</h2>
 
                     <p>
-                        The Application integrates with QuickBooks
-                        Online, a service provided by Intuit.
-                        Information processed by Intuit is subject
-                        to Intuit's applicable privacy policies and
-                        terms.
-                    </p>
-
-                    <h2>Changes to This Policy</h2>
-
-                    <p>
-                        Zetrick may update this Privacy Policy from
-                        time to time. Changes will be reflected on
-                        this page along with an updated effective
-                        date when appropriate.
+                        The Application integrates with
+                        QuickBooks Online, a service provided
+                        by Intuit. Information processed by
+                        Intuit is subject to Intuit's
+                        applicable policies and terms.
                     </p>
 
                     <h2>Contact</h2>
 
                     <p>
-                        Questions regarding this Privacy Policy or
-                        the Zetrick QuickBooks Integration may be
-                        directed to Zetrick LLC.
+                        Questions regarding this Privacy
+                        Policy may be directed to Zetrick LLC.
                     </p>
                 `
         )
     );
+}
+
+/*
+ * Consume an OAuth state exactly once.
+ */
+function consume_oauth_state(state: string): boolean {
+    const expires_at = oauth_states.get(state);
+
+    /*
+     * Delete before doing anything else.
+     * State is single-use.
+     */
+    oauth_states.delete(state);
+
+    if (!expires_at) return false;
+
+    if (expires_at < Date.now()) return false;
+
+    return true;
+}
+
+function cleanup_oauth_states(): void {
+    const now = Date.now();
+
+    for (const [state, expires_at] of oauth_states.entries()) {
+        if (expires_at < now) oauth_states.delete(state);
+    }
+}
+
+async function save_quickbooks_connection(connection: quickbooks_connection): Promise<void> {
+    const temporary_file = `${QUICKBOOKS_CONNECTION_FILE}.tmp`;
+    await fs.writeFile(temporary_file, JSON.stringify(connection, null, 4), {
+        encoding: "utf8",
+        mode: 0o600,
+    });
+
+    await fs.rename(temporary_file, QUICKBOOKS_CONNECTION_FILE);
+}
+
+function error_page(title: string, message: string): string {
+    return html_page(
+        title,
+        `
+            <h1>${escape_html(title)}</h1>
+
+            <p>
+                ${escape_html(message)}
+            </p>
+
+            <p>
+                <a class="button"
+                   href="/quickbooks/connect">
+                    Connect QuickBooks
+                </a>
+            </p>
+        `
+    );
+}
+
+function escape_html(value: string): string {
+    return value
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
 }
 
 function html_page(title: string, content: string): string {
@@ -375,12 +626,14 @@ function html_page(title: string, content: string): string {
         content="width=device-width, initial-scale=1"
     >
 
-    <title>${title}</title>
+    <title>${escape_html(title)}</title>
 
     <style>
         body {
             margin: 0;
-            padding: 0;
+            background: #fff;
+            color: #222;
+
             font-family:
                 -apple-system,
                 BlinkMacSystemFont,
@@ -389,8 +642,7 @@ function html_page(title: string, content: string): string {
                 Helvetica,
                 Arial,
                 sans-serif;
-            color: #222;
-            background: #fff;
+
             line-height: 1.6;
         }
 
@@ -401,23 +653,22 @@ function html_page(title: string, content: string): string {
         }
 
         h1 {
-            margin-bottom: 32px;
-            font-size: 32px;
+            margin-bottom: 28px;
         }
 
         h2 {
             margin-top: 36px;
-            margin-bottom: 12px;
-            font-size: 21px;
         }
 
-        p,
-        li {
-            font-size: 16px;
-        }
+        .button {
+            display: inline-block;
+            padding: 10px 16px;
 
-        a {
-            color: #1261a0;
+            background: #222;
+            color: #fff;
+
+            text-decoration: none;
+            border-radius: 4px;
         }
     </style>
 </head>
@@ -431,13 +682,23 @@ function html_page(title: string, content: string): string {
     `;
 }
 
-export function create_quickbooks_routes(): FastifyPluginAsync {
+export async function create_quickbooks_routes(): Promise<FastifyPluginAsync> {
+    await fs.mkdir(
+        "/var/lib/zetrick",
+        {
+            recursive: true,
+            mode: 0o700,
+        }
+    );
+    
     return async (fastify: FastifyInstance) => {
         fastify.get("/quickbooks", handle_quickbooks_launch);
         fastify.get("/quickbooks/terms", handle_quickbooks_terms);
         fastify.get("/quickbooks/privacy", handle_quickbooks_privacy);
         fastify.get("/quickbooks/connect", handle_quickbooks_connect);
-        fastify.get("/quickbooks/callback", handle_quickbooks_callback);
+        fastify.get<{
+            Querystring: quickbooks_callback_query;
+        }>("/quickbooks/callback", handle_quickbooks_callback);
         fastify.get("/quickbooks/disconnected", handle_quickbooks_disconnected);
     };
 }

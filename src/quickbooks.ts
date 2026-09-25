@@ -40,11 +40,11 @@ interface quickbooks_connection {
 
     access_token_expires_at: Date;
     refresh_token_expires_at: Date;
-
     connected_at: Date;
 }
 
-function format_UTC(date: Date) {
+function format_UTC(input: Date) {
+    const date = input instanceof Date ? input : new Date(input);
     const dd = String(date.getUTCDate()).padStart(2, "0");
     const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
     const yyyy = date.getUTCFullYear();

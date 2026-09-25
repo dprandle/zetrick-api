@@ -67,7 +67,7 @@ async function handle_quickbooks_launch(_request: FastifyRequest, reply: Fastify
         ? `
             <p>
                 <span style="color: #16803c; font-weight: 600;">
-                    ● Connected to QuickBooks
+        ● Connected to QuickBooks at ${connected.connected_at.toUTCString()} (expires ${connected.access_token_expires_at.toUTCString()})
                 </span>
             </p>
           `

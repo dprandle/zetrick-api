@@ -3,7 +3,6 @@ import fs from "node:fs/promises";
 import { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "./config.js";
 
-const QUICKBOOKS_REDIRECT_URI = "https://api.zetrick.com/quickbooks/callback";
 const QUICKBOOKS_SCOPE = "com.intuit.quickbooks.accounting";
 const QUICKBOOKS_AUTH_URL = "https://appcenter.intuit.com/connect/oauth2";
 const QUICKBOOKS_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
@@ -91,16 +90,14 @@ async function handle_quickbooks_connect(_request: FastifyRequest, reply: Fastif
     // Generate a cryptographically random CSRF token.
     const state = crypto.randomBytes(32).toString("base64url");
 
-    //State is valid for ten minutes.
+    // State is valid for ten minutes.
     oauth_states.set(state, Date.now() + 10 * 60 * 1000);
-
     cleanup_oauth_states();
-
     const params = new URLSearchParams({
         client_id: config.quickbooks.client_id,
         response_type: "code",
         scope: QUICKBOOKS_SCOPE,
-        redirect_uri: QUICKBOOKS_REDIRECT_URI,
+        redirect_uri: config.quickbooks.redirect_uri,
         state,
     });
 
@@ -186,7 +183,7 @@ async function handle_quickbooks_callback(
             body: new URLSearchParams({
                 grant_type: "authorization_code",
                 code,
-                redirect_uri: QUICKBOOKS_REDIRECT_URI,
+                redirect_uri: config.quickbooks.redirect_uri,
             }),
         });
     } catch (err) {

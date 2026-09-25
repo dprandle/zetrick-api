@@ -25,5 +25,6 @@ export const config = {
         url: require_env_string("QUICKBOOKS_API_URL"),
         client_id: require_env_string("QUICKBOOKS_API_CLIENT_ID"),
         client_secret: require_env_string("QUICKBOOKS_API_CLIENT_SECRET"),
+        redirect_uri: require_env_string("QUICKBOOKS_API_REDIRECT_URI"),
     },
 };

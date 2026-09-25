@@ -8,12 +8,9 @@ const QUICKBOOKS_AUTH_URL = "https://appcenter.intuit.com/connect/oauth2";
 const QUICKBOOKS_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
 const QUICKBOOKS_CONNECTION_FILE = "/var/lib/zetrick/quickbooks.json";
 
-/*
- * OAuth state is intentionally short-lived and single-use.
- *
- * This is acceptable for a single-process server. If you run
- * multiple processes/instances, move this to MongoDB or Redis.
- */
+// OAuth state is intentionally short-lived and single-use.
+// This is acceptable for a single-process server. If you run
+// multiple processes/instances, move this to MongoDB or Redis.
 const oauth_states = new Map<string, number>();
 
 interface quickbooks_callback_query {
@@ -47,41 +44,66 @@ interface quickbooks_connection {
     connected_at: Date;
 }
 
-/*
- * Intuit Launch URL
- *
- * https://api.zetrick.com/quickbooks
- */
+async function load_quickbooks_connection(): Promise<quickbooks_connection | null> {
+    try {
+        const contents = await fs.readFile(QUICKBOOKS_CONNECTION_FILE, {
+            encoding: "utf8",
+        });
+
+        return JSON.parse(contents) as quickbooks_connection;
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return null;
+        }
+
+        throw error;
+    }
+}
+
 async function handle_quickbooks_launch(_request: FastifyRequest, reply: FastifyReply) {
+    const connected = await load_quickbooks_connection();
+
+    const connection_status = connected
+        ? `
+            <p>
+                <span style="color: #16803c; font-weight: 600;">
+                    ● Connected to QuickBooks
+                </span>
+            </p>
+          `
+        : `
+            <p>
+                <a class="button"
+                   href="/quickbooks/connect">
+                    Connect QuickBooks
+                </a>
+            </p>
+          `;
+
     return reply.type("text/html; charset=utf-8").send(
         html_page(
             "Zetrick QuickBooks Integration",
             `
-                    <h1>Zetrick QuickBooks Integration</h1>
+                <h1>Zetrick QuickBooks Integration</h1>
 
-                    <p>
-                        This application integrates Zetrick LLC's
-                        internal business systems with QuickBooks
-                        Online.
-                    </p>
+                <p>
+                    This application integrates Zetrick LLC's
+                    internal business systems with QuickBooks
+                    Online.
+                </p>
 
-                    <p>
-                        <a class="button"
-                           href="/quickbooks/connect">
-                            Connect QuickBooks
-                        </a>
-                    </p>
+                ${connection_status}
 
-                    <p>
-                        <a href="/quickbooks/privacy">
-                            Privacy Policy
-                        </a>
-                        &nbsp;&middot;&nbsp;
-                        <a href="/quickbooks/terms">
-                            Terms of Use
-                        </a>
-                    </p>
-                `
+                <p>
+                    <a href="/quickbooks/privacy">
+                        Privacy Policy
+                    </a>
+                    &nbsp;&middot;&nbsp;
+                    <a href="/quickbooks/terms">
+                        Terms of Use
+                    </a>
+                </p>
+            `
         )
     );
 }
@@ -260,7 +282,7 @@ async function handle_quickbooks_callback(
 
 // Note that this is the page the browser is sent to
 // when disconnecting. It is not itself a webhook.
-async function handle_quickbooks_disconnected(request: FastifyRequest, reply: FastifyReply) {
+async function handle_quickbooks_disconnected(_request: FastifyRequest, reply: FastifyReply) {
     return reply.type("text/html; charset=utf-8").send(
         html_page(
             "QuickBooks Disconnected",
@@ -283,7 +305,7 @@ async function handle_quickbooks_disconnected(request: FastifyRequest, reply: Fa
     );
 }
 
-async function handle_quickbooks_terms(request: FastifyRequest, reply: FastifyReply) {
+async function handle_quickbooks_terms(_request: FastifyRequest, reply: FastifyReply) {
     return reply.type("text/html; charset=utf-8").send(
         html_page(
             "Terms of Use",
@@ -355,7 +377,7 @@ async function handle_quickbooks_terms(request: FastifyRequest, reply: FastifyRe
     );
 }
 
-async function handle_quickbooks_privacy(request: FastifyRequest, reply: FastifyReply) {
+async function handle_quickbooks_privacy(_request: FastifyRequest, reply: FastifyReply) {
     return reply.type("text/html; charset=utf-8").send(
         html_page(
             "Privacy Policy",

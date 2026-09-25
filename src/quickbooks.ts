@@ -44,6 +44,21 @@ interface quickbooks_connection {
     connected_at: Date;
 }
 
+function format_UTC(date: Date) {
+    const dd = String(date.getUTCDate()).padStart(2, "0");
+    const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const yyyy = date.getUTCFullYear();
+
+    let hours = date.getUTCHours();
+    const minutes = String(date.getUTCMinutes()).padStart(2, "0");
+    const ampm = hours >= 12 ? "PM" : "AM";
+
+    hours = hours % 12 || 12;
+    const hh = String(hours).padStart(2, "0");
+
+    return `${dd}/${mm}/${yyyy} at ${hh}:${minutes} ${ampm} UTC`;
+}
+
 async function load_quickbooks_connection(): Promise<quickbooks_connection | null> {
     try {
         const contents = await fs.readFile(QUICKBOOKS_CONNECTION_FILE, {
@@ -67,7 +82,7 @@ async function handle_quickbooks_launch(_request: FastifyRequest, reply: Fastify
         ? `
             <p>
                 <span style="color: #16803c; font-weight: 600;">
-        ● Connected to QuickBooks at ${connected.connected_at.toUTCString()} (expires ${connected.access_token_expires_at.toUTCString()})
+        ● Connected to QuickBooks at ${format_UTC(connected.connected_at)} (expires ${format_UTC(connected.access_token_expires_at)})
                 </span>
             </p>
           `

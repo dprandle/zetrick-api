@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import { config } from "./config.js";
 
 const QUICKBOOKS_REDIRECT_URI = "https://api.zetrick.com/quickbooks/callback";
 const QUICKBOOKS_SCOPE = "com.intuit.quickbooks.accounting";
@@ -35,7 +36,7 @@ interface quickbooks_token_response {
     token_type: string;
 }
 
-export interface quickbooks_connection {
+interface quickbooks_connection {
     realm_id: string;
 
     access_token: string;
@@ -52,7 +53,7 @@ export interface quickbooks_connection {
  *
  * https://api.zetrick.com/quickbooks
  */
-async function handle_quickbooks_launch(request: FastifyRequest, reply: FastifyReply) {
+async function handle_quickbooks_launch(_request: FastifyRequest, reply: FastifyReply) {
     return reply.type("text/html; charset=utf-8").send(
         html_page(
             "Zetrick QuickBooks Integration",
@@ -86,39 +87,17 @@ async function handle_quickbooks_launch(request: FastifyRequest, reply: FastifyR
     );
 }
 
-/*
- * Intuit Connect/Reconnect URL
- *
- * https://api.zetrick.com/quickbooks/connect
- *
- * Starts OAuth.
- */
-async function handle_quickbooks_connect(request: FastifyRequest, reply: FastifyReply) {
-    const client_id = process.env.QUICKBOOKS_CLIENT_ID;
-
-    if (!client_id) {
-        request.log.error("QUICKBOOKS_CLIENT_ID is not configured");
-
-        return reply
-            .code(500)
-            .type("text/html; charset=utf-8")
-            .send(error_page("QuickBooks Configuration Error", "The QuickBooks integration is not configured."));
-    }
-
-    /*
-     * Generate a cryptographically random CSRF token.
-     */
+async function handle_quickbooks_connect(_request: FastifyRequest, reply: FastifyReply) {
+    // Generate a cryptographically random CSRF token.
     const state = crypto.randomBytes(32).toString("base64url");
 
-    /*
-     * State is valid for ten minutes.
-     */
+    //State is valid for ten minutes.
     oauth_states.set(state, Date.now() + 10 * 60 * 1000);
 
     cleanup_oauth_states();
 
     const params = new URLSearchParams({
-        client_id,
+        client_id: config.quickbooks.client_id,
         response_type: "code",
         scope: QUICKBOOKS_SCOPE,
         redirect_uri: QUICKBOOKS_REDIRECT_URI,
@@ -128,11 +107,6 @@ async function handle_quickbooks_connect(request: FastifyRequest, reply: Fastify
     return reply.redirect(`${QUICKBOOKS_AUTH_URL}?${params.toString()}`);
 }
 
-/*
- * OAuth redirect URI
- *
- * https://api.zetrick.com/quickbooks/callback
- */
 async function handle_quickbooks_callback(
     request: FastifyRequest<{
         Querystring: quickbooks_callback_query;
@@ -141,10 +115,8 @@ async function handle_quickbooks_callback(
 ) {
     const { code, state, realmId, error, error_description } = request.query;
 
-    /*
-     * The user may have denied authorization, or Intuit
-     * may have returned another OAuth error.
-     */
+    // The user may have denied authorization, or Intuit
+    // may have returned another OAuth error.
     if (error) {
         request.log.warn(
             {
@@ -165,9 +137,7 @@ async function handle_quickbooks_callback(
             );
     }
 
-    /*
-     * All three are required for a successful callback.
-     */
+    // All three are required for a successful callback.
     if (!code || !state || !realmId) {
         request.log.warn("Incomplete QuickBooks OAuth callback");
 
@@ -182,12 +152,9 @@ async function handle_quickbooks_callback(
             );
     }
 
-    /*
-     * Validate CSRF state.
-     *
-     * consume_oauth_state() deletes it whether valid or
-     * expired so that state values cannot be replayed.
-     */
+    // Validate CSRF state.
+    // consume_oauth_state() deletes it whether valid or
+    // expired so that state values cannot be replayed.
     if (!consume_oauth_state(state)) {
         request.log.warn("Rejected QuickBooks OAuth callback due to invalid state");
 
@@ -202,50 +169,28 @@ async function handle_quickbooks_callback(
             );
     }
 
-    const client_id = process.env.QUICKBOOKS_CLIENT_ID;
-
-    const client_secret = process.env.QUICKBOOKS_CLIENT_SECRET;
-
-    if (!client_id || !client_secret) {
-        request.log.error("QuickBooks OAuth credentials are not configured");
-
-        return reply
-            .code(500)
-            .type("text/html; charset=utf-8")
-            .send(error_page("QuickBooks Configuration Error", "The QuickBooks integration is not configured."));
-    }
-
-    /*
-     * Exchange the short-lived authorization code for
-     * access + refresh tokens.
-     */
-    const basic_auth = Buffer.from(`${client_id}:${client_secret}`).toString("base64");
-
+    // Exchange the short-lived authorization code for
+    // access + refresh tokens.
+    const basic_auth = Buffer.from(`${config.quickbooks.client_id}:${config.quickbooks.client_secret}`).toString(
+        "base64"
+    );
     let token_response: Response;
-
     try {
         token_response = await fetch(QUICKBOOKS_TOKEN_URL, {
             method: "POST",
-
             headers: {
                 Authorization: `Basic ${basic_auth}`,
-
                 Accept: "application/json",
-
                 "Content-Type": "application/x-www-form-urlencoded",
             },
-
             body: new URLSearchParams({
                 grant_type: "authorization_code",
-
                 code,
-
                 redirect_uri: QUICKBOOKS_REDIRECT_URI,
             }),
         });
     } catch (err) {
         request.log.error({ err }, "Unable to contact QuickBooks OAuth server");
-
         return reply
             .code(502)
             .type("text/html; charset=utf-8")
@@ -255,9 +200,7 @@ async function handle_quickbooks_callback(
     }
 
     if (!token_response.ok) {
-        /*
-         * Don't log the authorization code or credentials.
-         */
+        // Don't log the authorization code or credentials.
         const response_body = await token_response.text();
 
         request.log.error(
@@ -281,12 +224,7 @@ async function handle_quickbooks_callback(
 
     const tokens = (await token_response.json()) as quickbooks_token_response;
 
-    /*
-     * Persist this.
-     *
-     * Replace this function with your MongoDB
-     * implementation.
-     */
+    // Persist this.
     await save_quickbooks_connection({
         realm_id: realmId,
         access_token: tokens.access_token,
@@ -323,12 +261,8 @@ async function handle_quickbooks_callback(
     );
 }
 
-/*
- * Intuit Disconnect URL
- *
- * Note that this is the page the browser is sent to
- * when disconnecting. It is not itself a webhook.
- */
+// Note that this is the page the browser is sent to
+// when disconnecting. It is not itself a webhook.
 async function handle_quickbooks_disconnected(request: FastifyRequest, reply: FastifyReply) {
     return reply.type("text/html; charset=utf-8").send(
         html_page(
@@ -548,22 +482,15 @@ async function handle_quickbooks_privacy(request: FastifyRequest, reply: Fastify
     );
 }
 
-/*
- * Consume an OAuth state exactly once.
- */
+// Consume an OAuth state exactly once.
 function consume_oauth_state(state: string): boolean {
     const expires_at = oauth_states.get(state);
 
-    /*
-     * Delete before doing anything else.
-     * State is single-use.
-     */
+    // Delete before doing anything else.
+    // State is single-use.
     oauth_states.delete(state);
-
     if (!expires_at) return false;
-
     if (expires_at < Date.now()) return false;
-
     return true;
 }
 
@@ -576,12 +503,12 @@ function cleanup_oauth_states(): void {
 }
 
 async function save_quickbooks_connection(connection: quickbooks_connection): Promise<void> {
+    // We do this because a write to tmp file and rename is atomic
     const temporary_file = `${QUICKBOOKS_CONNECTION_FILE}.tmp`;
     await fs.writeFile(temporary_file, JSON.stringify(connection, null, 4), {
         encoding: "utf8",
         mode: 0o600,
     });
-
     await fs.rename(temporary_file, QUICKBOOKS_CONNECTION_FILE);
 }
 
@@ -683,14 +610,12 @@ function html_page(title: string, content: string): string {
 }
 
 export async function create_quickbooks_routes(): Promise<FastifyPluginAsync> {
-    await fs.mkdir(
-        "/var/lib/zetrick",
-        {
-            recursive: true,
-            mode: 0o700,
-        }
-    );
-    
+    // Create the persisted OAuth cred file
+    await fs.mkdir("/var/lib/zetrick", {
+        recursive: true,
+        mode: 0o700,
+    });
+
     return async (fastify: FastifyInstance) => {
         fastify.get("/quickbooks", handle_quickbooks_launch);
         fastify.get("/quickbooks/terms", handle_quickbooks_terms);

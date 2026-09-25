@@ -21,4 +21,9 @@ export const config = {
         auth_token: require_env_string("TWILIO_AUTH_TOKEN"),
         message_service_sid: require_env_string("TWILIO_MESSAGE_SERVICE_SID"),
     },
+    quickbooks: {
+        url: require_env_string("QUICKBOOKS_API_URL"),
+        client_id: require_env_string("QUICKBOOKS_API_CLIENT_ID"),
+        client_secret: require_env_string("QUICKBOOKS_API_CLIENT_SECRET"),
+    },
 };

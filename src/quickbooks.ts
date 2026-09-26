@@ -56,7 +56,7 @@ function format_UTC(input: Date) {
     hours = hours % 12 || 12;
     const hh = String(hours).padStart(2, "0");
 
-    return `${dd}/${mm}/${yyyy} at ${hh}:${minutes} ${ampm} UTC`;
+    return `${mm}/${dd}/${yyyy} at ${hh}:${minutes} ${ampm} UTC`;
 }
 
 async function load_quickbooks_connection(): Promise<quickbooks_connection | null> {
@@ -82,7 +82,7 @@ async function handle_quickbooks_launch(_request: FastifyRequest, reply: Fastify
         ? `
             <p>
                 <span style="color: #16803c; font-weight: 600;">
-        ● Connected to QuickBooks at ${format_UTC(connected.connected_at)} (expires ${format_UTC(connected.access_token_expires_at)})
+        ● Connected to QuickBooks on ${format_UTC(connected.connected_at)} (expires ${format_UTC(connected.access_token_expires_at)})
                 </span>
             </p>
           `

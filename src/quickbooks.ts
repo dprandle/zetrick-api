@@ -1,17 +1,10 @@
-import crypto from "node:crypto";
-import fs from "node:fs/promises";
 import { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
-import { config } from "./config.js";
 
-const QUICKBOOKS_SCOPE = "com.intuit.quickbooks.accounting";
-const QUICKBOOKS_AUTH_URL = "https://appcenter.intuit.com/connect/oauth2";
-const QUICKBOOKS_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
-const QUICKBOOKS_CONNECTION_FILE = "/var/lib/zetrick/quickbooks.json";
-
-// OAuth state is intentionally short-lived and single-use.
-// This is acceptable for a single-process server. If you run
-// multiple processes/instances, move this to MongoDB or Redis.
-const oauth_states = new Map<string, number>();
+// All QuickBooks Online OAuth logic, secrets and tokens live in qbosync, which is
+// the only process that talks to QBO (and the only one allowed to refresh the
+// rotating refresh token). Intuit needs a public redirect URL, so these routes stay
+// here and forward to qbosync's loopback server, like the qbtsync invite endpoint.
+const QBOSYNC_URL = "http://localhost:3002";
 
 interface quickbooks_callback_query {
     code?: string;
@@ -22,25 +15,20 @@ interface quickbooks_callback_query {
     error_description?: string;
 }
 
-interface quickbooks_token_response {
-    access_token: string;
-    refresh_token: string;
-
-    expires_in: number;
-    x_refresh_token_expires_in: number;
-
-    token_type: string;
+interface qbosync_status {
+    connected: boolean;
+    qbo_env: string;
+    realm_id?: string;
+    connected_at?: string;
+    access_token_expires_at?: string;
+    refresh_token_expires_at?: string;
 }
 
-interface quickbooks_connection {
-    realm_id: string;
-
-    access_token: string;
-    refresh_token: string;
-
-    access_token_expires_at: Date;
-    refresh_token_expires_at: Date;
-    connected_at: Date;
+interface qbosync_callback_result {
+    ok: boolean;
+    status: number;
+    title: string;
+    message: string;
 }
 
 function format_UTC(input: Date) {
@@ -59,41 +47,47 @@ function format_UTC(input: Date) {
     return `${mm}/${dd}/${yyyy} at ${hh}:${minutes} ${ampm} UTC`;
 }
 
-async function load_quickbooks_connection(): Promise<quickbooks_connection | null> {
+async function fetch_qbosync_status(): Promise<qbosync_status | null> {
     try {
-        const contents = await fs.readFile(QUICKBOOKS_CONNECTION_FILE, {
-            encoding: "utf8",
-        });
-
-        return JSON.parse(contents) as quickbooks_connection;
-    } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-            return null;
-        }
-
-        throw error;
+        const resp = await fetch(`${QBOSYNC_URL}/oauth/status`);
+        if (!resp.ok) return null;
+        return (await resp.json()) as qbosync_status;
+    } catch {
+        return null;
     }
 }
 
-async function handle_quickbooks_launch(_request: FastifyRequest, reply: FastifyReply) {
-    const connected = await load_quickbooks_connection();
+async function handle_quickbooks_launch(request: FastifyRequest, reply: FastifyReply) {
+    const status = await fetch_qbosync_status();
+    if (!status) request.log.error("qbosync status endpoint unreachable");
 
-    const connection_status = connected
-        ? `
-            <p>
-                <span style="color: #16803c; font-weight: 600;">
-        ● Connected to QuickBooks on ${format_UTC(connected.connected_at)} (expires ${format_UTC(connected.access_token_expires_at)})
-                </span>
-            </p>
-          `
-        : `
+    // Connected means the refresh token is still valid; the access token itself
+    // is refreshed by qbosync on demand, so its expiry isn't interesting here.
+    const connect_button = `
             <p>
                 <a class="button"
                    href="/quickbooks/connect">
-                    Connect QuickBooks
+                    ${status?.realm_id ? "Reconnect" : "Connect"} QuickBooks
                 </a>
             </p>
           `;
+    const connection_status = !status
+        ? `
+            <p>
+                <span style="color: #b42318; font-weight: 600;">
+        ● QuickBooks sync service is not reachable
+                </span>
+            </p>
+          `
+        : status.connected
+          ? `
+            <p>
+                <span style="color: #16803c; font-weight: 600;">
+        ● Connected to QuickBooks (${escape_html(status.qbo_env)}) on ${format_UTC(new Date(status.connected_at!))} (reconnect needed by ${format_UTC(new Date(status.refresh_token_expires_at!))})
+                </span>
+            </p>
+          `
+          : connect_button;
 
     return reply.type("text/html; charset=utf-8").send(
         html_page(
@@ -123,22 +117,19 @@ async function handle_quickbooks_launch(_request: FastifyRequest, reply: Fastify
     );
 }
 
-async function handle_quickbooks_connect(_request: FastifyRequest, reply: FastifyReply) {
-    // Generate a cryptographically random CSRF token.
-    const state = crypto.randomBytes(32).toString("base64url");
-
-    // State is valid for ten minutes.
-    oauth_states.set(state, Date.now() + 10 * 60 * 1000);
-    cleanup_oauth_states();
-    const params = new URLSearchParams({
-        client_id: config.quickbooks.client_id,
-        response_type: "code",
-        scope: QUICKBOOKS_SCOPE,
-        redirect_uri: config.quickbooks.redirect_uri,
-        state,
-    });
-
-    return reply.redirect(`${QUICKBOOKS_AUTH_URL}?${params.toString()}`);
+async function handle_quickbooks_connect(request: FastifyRequest, reply: FastifyReply) {
+    try {
+        const resp = await fetch(`${QBOSYNC_URL}/oauth/connect_url`);
+        if (!resp.ok) throw new Error(`qbosync returned ${resp.status}`);
+        const { url } = (await resp.json()) as { url: string };
+        return reply.redirect(url);
+    } catch (err) {
+        request.log.error({ err }, "Unable to get QuickBooks connect URL from qbosync");
+        return reply
+            .code(502)
+            .type("text/html; charset=utf-8")
+            .send(error_page("QuickBooks Connection Failed", "The QuickBooks sync service is not reachable."));
+    }
 }
 
 async function handle_quickbooks_callback(
@@ -147,148 +138,44 @@ async function handle_quickbooks_callback(
     }>,
     reply: FastifyReply
 ) {
+    // Forward only the fields qbosync expects; it validates state and realm,
+    // exchanges the code and stores the tokens.
     const { code, state, realmId, error, error_description } = request.query;
-
-    // The user may have denied authorization, or Intuit
-    // may have returned another OAuth error.
-    if (error) {
-        request.log.warn(
-            {
-                error,
-                error_description,
-            },
-            "QuickBooks OAuth authorization failed"
-        );
-
-        return reply
-            .code(400)
-            .type("text/html; charset=utf-8")
-            .send(
-                error_page(
-                    "QuickBooks Authorization Failed",
-                    error_description ?? "QuickBooks authorization was not completed."
-                )
-            );
-    }
-
-    // All three are required for a successful callback.
-    if (!code || !state || !realmId) {
-        request.log.warn("Incomplete QuickBooks OAuth callback");
-
-        return reply
-            .code(400)
-            .type("text/html; charset=utf-8")
-            .send(
-                error_page(
-                    "Invalid Authorization Response",
-                    "The authorization response from QuickBooks was incomplete."
-                )
-            );
-    }
-
-    // Validate CSRF state.
-    // consume_oauth_state() deletes it whether valid or
-    // expired so that state values cannot be replayed.
-    if (!consume_oauth_state(state)) {
-        request.log.warn("Rejected QuickBooks OAuth callback due to invalid state");
-
-        return reply
-            .code(400)
-            .type("text/html; charset=utf-8")
-            .send(
-                error_page(
-                    "Authorization Validation Failed",
-                    "The authorization request could not be verified. Please reconnect QuickBooks."
-                )
-            );
-    }
-
-    // Exchange the short-lived authorization code for
-    // access + refresh tokens.
-    const basic_auth = Buffer.from(`${config.quickbooks.client_id}:${config.quickbooks.client_secret}`).toString(
-        "base64"
-    );
-    let token_response: Response;
+    let result: qbosync_callback_result;
     try {
-        token_response = await fetch(QUICKBOOKS_TOKEN_URL, {
+        const resp = await fetch(`${QBOSYNC_URL}/oauth/callback`, {
             method: "POST",
-            headers: {
-                Authorization: `Basic ${basic_auth}`,
-                Accept: "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            body: new URLSearchParams({
-                grant_type: "authorization_code",
-                code,
-                redirect_uri: config.quickbooks.redirect_uri,
-            }),
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code, state, realmId, error, error_description }),
         });
+        result = (await resp.json()) as qbosync_callback_result;
     } catch (err) {
-        request.log.error({ err }, "Unable to contact QuickBooks OAuth server");
-        return reply
-            .code(502)
-            .type("text/html; charset=utf-8")
-            .send(
-                error_page("QuickBooks Connection Failed", "Unable to communicate with QuickBooks. Please try again.")
-            );
+        request.log.error({ err }, "Unable to forward QuickBooks OAuth callback to qbosync");
+        result = {
+            ok: false,
+            status: 502,
+            title: "QuickBooks Connection Failed",
+            message: "The QuickBooks sync service is not reachable. Please try again.",
+        };
     }
 
-    if (!token_response.ok) {
-        // Don't log the authorization code or credentials.
-        const response_body = await token_response.text();
-
-        request.log.error(
-            {
-                status: token_response.status,
-                response_body,
-            },
-            "QuickBooks token exchange failed"
-        );
-
+    if (!result.ok) {
+        request.log.warn({ title: result.title }, "QuickBooks OAuth callback failed");
         return reply
-            .code(502)
+            .code(result.status)
             .type("text/html; charset=utf-8")
-            .send(
-                error_page(
-                    "QuickBooks Connection Failed",
-                    "QuickBooks could not complete the authorization. Please try connecting again."
-                )
-            );
+            .send(error_page(result.title, result.message));
     }
 
-    const tokens = (await token_response.json()) as quickbooks_token_response;
-
-    // Persist this.
-    await save_quickbooks_connection({
-        realm_id: realmId,
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        access_token_expires_at: new Date(Date.now() + tokens.expires_in * 1000),
-        refresh_token_expires_at: new Date(Date.now() + tokens.x_refresh_token_expires_in * 1000),
-        connected_at: new Date(),
-    });
-
-    request.log.info(
-        {
-            realm_id: realmId,
-        },
-        "QuickBooks connected successfully"
-    );
-
+    request.log.info({ realm_id: realmId }, "QuickBooks connected successfully");
     return reply.type("text/html; charset=utf-8").send(
         html_page(
-            "QuickBooks Connected",
+            result.title,
             `
-                    <h1>QuickBooks Connected</h1>
+                    <h1>${escape_html(result.title)}</h1>
 
                     <p>
-                        Zetrick's QuickBooks Online
-                        integration was successfully
-                        authorized.
-                    </p>
-
-                    <p>
-                        You may close this window.
+                        ${escape_html(result.message)}
                     </p>
                 `
         )
@@ -516,36 +403,6 @@ async function handle_quickbooks_privacy(_request: FastifyRequest, reply: Fastif
     );
 }
 
-// Consume an OAuth state exactly once.
-function consume_oauth_state(state: string): boolean {
-    const expires_at = oauth_states.get(state);
-
-    // Delete before doing anything else.
-    // State is single-use.
-    oauth_states.delete(state);
-    if (!expires_at) return false;
-    if (expires_at < Date.now()) return false;
-    return true;
-}
-
-function cleanup_oauth_states(): void {
-    const now = Date.now();
-
-    for (const [state, expires_at] of oauth_states.entries()) {
-        if (expires_at < now) oauth_states.delete(state);
-    }
-}
-
-async function save_quickbooks_connection(connection: quickbooks_connection): Promise<void> {
-    // We do this because a write to tmp file and rename is atomic
-    const temporary_file = `${QUICKBOOKS_CONNECTION_FILE}.tmp`;
-    await fs.writeFile(temporary_file, JSON.stringify(connection, null, 4), {
-        encoding: "utf8",
-        mode: 0o600,
-    });
-    await fs.rename(temporary_file, QUICKBOOKS_CONNECTION_FILE);
-}
-
 function error_page(title: string, message: string): string {
     return html_page(
         title,
@@ -644,12 +501,6 @@ function html_page(title: string, content: string): string {
 }
 
 export async function create_quickbooks_routes(): Promise<FastifyPluginAsync> {
-    // Create the persisted OAuth cred file
-    await fs.mkdir("/var/lib/zetrick", {
-        recursive: true,
-        mode: 0o700,
-    });
-
     return async (fastify: FastifyInstance) => {
         fastify.get("/quickbooks", handle_quickbooks_launch);
         fastify.get("/quickbooks/terms", handle_quickbooks_terms);

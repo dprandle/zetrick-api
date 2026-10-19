@@ -1,4 +1,5 @@
 import { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import { require_bearer_auth } from "./time_tracking.js";
 
 // All QuickBooks Online OAuth logic, secrets and tokens live in qbosync, which is
 // the only process that talks to QBO (and the only one allowed to refresh the
@@ -180,6 +181,25 @@ async function handle_quickbooks_callback(
                 `
         )
     );
+}
+
+// Uber looks up a subcontractor's QBO vendor. qbosync does the lookup; its status
+// (200 vendor, 404 none linked, 503 not connected, ...) and JSON body are relayed as-is.
+async function handle_quickbooks_get_vendor(
+    request: FastifyRequest<{ Params: { subc_id: string } }>,
+    reply: FastifyReply
+) {
+    const { subc_id } = request.params;
+    try {
+        const resp = await fetch(`${QBOSYNC_URL}/vendors/by_subc/${encodeURIComponent(subc_id)}`);
+        return reply
+            .code(resp.status)
+            .type("application/json; charset=utf-8")
+            .send(await resp.text());
+    } catch (err) {
+        request.log.error({ err }, "Unable to forward QuickBooks vendor lookup to qbosync");
+        return reply.code(502).send({ message: "The QuickBooks sync service is not reachable." });
+    }
 }
 
 // Note that this is the page the browser is sent to
@@ -510,5 +530,8 @@ export async function create_quickbooks_routes(): Promise<FastifyPluginAsync> {
             Querystring: quickbooks_callback_query;
         }>("/quickbooks/callback", handle_quickbooks_callback);
         fastify.get("/quickbooks/disconnected", handle_quickbooks_disconnected);
+        fastify.get<{
+            Params: { subc_id: string };
+        }>("/quickbooks/vendors/:subc_id", { preHandler: require_bearer_auth }, handle_quickbooks_get_vendor);
     };
 }

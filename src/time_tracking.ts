@@ -23,10 +23,10 @@ const invite_request_body_schema = {
 } as const;
 
 // Rejects the request unless it carries the configured bearer token in the
-// Authorization header. Used to guard the invitation route.
-async function require_bearer_auth(req: FastifyRequest, reply: FastifyReply) {
+// Authorization header. Guards the routes Uber calls.
+export async function require_bearer_auth(req: FastifyRequest, reply: FastifyReply) {
     const header = req.headers.authorization;
-    const expected = `Bearer ${config.invitation.auth_token}`;
+    const expected = `Bearer ${config.uber.auth_token}`;
     if (header !== expected) {
         return reply.code(401).send({ message: "Unauthorized" });
     }

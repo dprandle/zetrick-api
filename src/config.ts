@@ -13,8 +13,8 @@ export const config = {
         hresources: require_env_string("MONGO_HRESOURCES"),
         contracts: require_env_string("MONGO_CONTRACTS"),
     },
-    invitation: {
-        auth_token: require_env_string("INVITATION_AUTH_TOKEN"),
+    uber: {
+        auth_token: require_env_string("UBER_AUTH_TOKEN"),
     },
     twilio: {
         account_sid: require_env_string("TWILIO_ACCOUNT_SID"),

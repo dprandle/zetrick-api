@@ -202,6 +202,37 @@ async function handle_quickbooks_get_vendor(
     }
 }
 
+// Uber creates QBO bills for a completed subc payment in one request. qbosync validates
+// and creates them; its status (200 with per-bill results, 503 not connected, ...) and
+// JSON body are relayed as-is. The body is passed through untouched - qbosync owns the
+// bill fields, so a new one only needs changing there and in Uber.
+async function handle_quickbooks_create_bills(request: FastifyRequest, reply: FastifyReply) {
+    return relay_bills_post(request, reply, "/bills", "bill creation");
+}
+
+// Uber deletes one unpaid bill. qbosync checks the live bill is unpaid (and is the bill
+// Uber thinks it is) before deleting; its status and body are relayed as-is.
+async function handle_quickbooks_delete_bill(request: FastifyRequest, reply: FastifyReply) {
+    return relay_bills_post(request, reply, "/bills/delete", "bill delete");
+}
+
+async function relay_bills_post(request: FastifyRequest, reply: FastifyReply, path: string, what: string) {
+    try {
+        const resp = await fetch(`${QBOSYNC_URL}${path}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(request.body ?? {}),
+        });
+        return reply
+            .code(resp.status)
+            .type("application/json; charset=utf-8")
+            .send(await resp.text());
+    } catch (err) {
+        request.log.error({ err }, `Unable to forward QuickBooks ${what} to qbosync`);
+        return reply.code(502).send({ message: "The QuickBooks sync service is not reachable." });
+    }
+}
+
 // Note that this is the page the browser is sent to
 // when disconnecting. It is not itself a webhook.
 async function handle_quickbooks_disconnected(_request: FastifyRequest, reply: FastifyReply) {
@@ -533,5 +564,7 @@ export async function create_quickbooks_routes(): Promise<FastifyPluginAsync> {
         fastify.get<{
             Params: { subc_id: string };
         }>("/quickbooks/vendors/:subc_id", { preHandler: require_bearer_auth }, handle_quickbooks_get_vendor);
+        fastify.post("/quickbooks/bills", { preHandler: require_bearer_auth }, handle_quickbooks_create_bills);
+        fastify.post("/quickbooks/bills/delete", { preHandler: require_bearer_auth }, handle_quickbooks_delete_bill);
     };
 }

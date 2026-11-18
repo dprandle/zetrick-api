@@ -58,6 +58,31 @@ async function fetch_qbosync_status(): Promise<qbosync_status | null> {
     }
 }
 
+async function handle_quickbooks_webhook(request: FastifyRequest, reply: FastifyReply) {
+    try {
+        const sig = request.headers["intuit-signature"];
+        const content_type = request.headers["content-type"];
+        const resp = await fetch(`${QBOSYNC_URL}/quickbooks/webhook`, {
+            method: "POST",
+            headers: {
+                "intuit-signature": Array.isArray(sig) ? sig[0] : (sig ?? ""),
+                "content-type": Array.isArray(content_type) ? content_type[0] : (content_type ?? "application/json"),
+            },
+            body: JSON.stringify(request.body),
+        });
+
+        return reply
+            .code(resp.status)
+            .type(resp.headers.get("content-type") ?? "application/json; charset=utf-8")
+            .send(await resp.text());
+    } catch (err) {
+        request.log.error({ err }, "Unable to forward QuickBooks webhook to qbosync");
+        return reply.code(502).send({
+            message: "The QuickBooks sync service is not reachable.",
+        });
+    }
+}
+
 async function handle_quickbooks_launch(request: FastifyRequest, reply: FastifyReply) {
     const status = await fetch_qbosync_status();
     if (!status) request.log.error("qbosync status endpoint unreachable");
@@ -566,5 +591,6 @@ export async function create_quickbooks_routes(): Promise<FastifyPluginAsync> {
         }>("/quickbooks/vendors/:subc_id", { preHandler: require_bearer_auth }, handle_quickbooks_get_vendor);
         fastify.post("/quickbooks/bills", { preHandler: require_bearer_auth }, handle_quickbooks_create_bills);
         fastify.post("/quickbooks/bills/delete", { preHandler: require_bearer_auth }, handle_quickbooks_delete_bill);
+        fastify.post("/quickbooks/webhook", handle_quickbooks_webhook);
     };
 }
